@@ -160,22 +160,6 @@ export function removeAllStoredScreenshots(root: string, deps: { fs?: StoreFs } 
 }
 
 /**
- * The userData directory, resolved the same way DatabaseManager resolves it:
- * NATIVELY_TEST_USERDATA first (test runner), then Electron's app path.
- * Returns null when neither is available (plain node without Electron).
- */
-export function resolveUserDataDir(): string | null {
-    const fromEnv = process.env.NATIVELY_TEST_USERDATA;
-    if (fromEnv) return fromEnv;
-    try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { app } = require('electron');
-        if (app && typeof app.getPath === 'function') return app.getPath('userData');
-    } catch { /* not in Electron */ }
-    return null;
-}
-
-/**
  * Default file name offered by "Save as" for a stored screenshot. Local time,
  * no ':' or other characters Windows rejects in file names.
  */
