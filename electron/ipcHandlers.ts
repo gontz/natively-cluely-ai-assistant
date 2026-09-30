@@ -17111,6 +17111,174 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // ── Interview Knowledge (free-tier RAG, electron/services/interviewKnowledge/) ──
+  // Deliberately separate from Modes reference files above: NONE of these
+  // handlers call isProOrTrialActive() — that is the whole point of this
+  // feature (see the spec's "Why this exists" section). A grep-test
+  // (electron/services/__tests__/InterviewKnowledgeIpcFree.test.mjs)
+  // asserts none of them ever gain that call, so this stays honestly free on
+  // every future edit, not just today.
+
+  // Renderer-supplied docType is untrusted input: anything outside the known
+  // set is stored as 'other' (neither boosted nor penalized by retrieval).
+  const normalizeKnowledgeDocType = (value: unknown) => {
+    const { KNOWLEDGE_DOC_TYPES } = require('./services/interviewKnowledge/docTypeAffinity') as typeof import('./services/interviewKnowledge/docTypeAffinity');
+    return (KNOWLEDGE_DOC_TYPES as readonly string[]).includes(value as string) ? value as import('./services/interviewKnowledge/docTypeAffinity').KnowledgeDocType : 'other';
+  };
+
+  safeHandle('knowledge-doc:add-text', async (_, params: { title: string; content: string; collectionId?: string | null; docType?: string }) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      const doc = InterviewKnowledgeRetriever.getInstance().addText({ title: params?.title, content: params?.content, source: 'paste', collectionId: params?.collectionId, docType: normalizeKnowledgeDocType(params?.docType) });
+      return { success: true, doc };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:add-text error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-doc:add-file', async (_, params?: { collectionId?: string | null; docType?: string }) => {
+    try {
+      const result: any = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [
+          // One source of truth with the extractor, same as modes:upload-reference-file.
+          { name: 'Text, Documents & Code', extensions: [...SAFE_DOCUMENT_EXTENSIONS].map(extension => extension.slice(1)) },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (result.canceled || !result.filePaths?.[0]) return { success: false, cancelled: true };
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      const doc = await InterviewKnowledgeRetriever.getInstance().addFile(result.filePaths[0], params?.collectionId, normalizeKnowledgeDocType(params?.docType));
+      return { success: true, doc };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:add-file error:', e);
+      return { success: false, error: 'Could not parse the selected file. It may be corrupt, password-protected, unsupported, or too large.' };
+    }
+  });
+
+  safeHandle('knowledge-doc:add-folder', async (_, params?: { collectionId?: string | null }) => {
+    try {
+      const result: any = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+      if (result.canceled || !result.filePaths?.[0]) return { success: false, cancelled: true };
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      const ingestResult = await InterviewKnowledgeRetriever.getInstance().addFolder(result.filePaths[0], params?.collectionId);
+      return { success: true, ...ingestResult };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:add-folder error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-doc:list', async (_, collectionId?: string | null) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      return { success: true, docs: InterviewKnowledgeRetriever.getInstance().list(collectionId) };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:list error:', e);
+      return { success: false, docs: [], error: e?.message || String(e) };
+    }
+  });
+
+  // For the citation "open source document" viewer — id is a citation's
+  // own sourceId (== this table's id column, see getById's doc comment).
+  safeHandle('knowledge-doc:get', async (_, id: string) => {
+    try {
+      if (typeof id !== 'string' || !id.trim()) return { success: false, error: 'invalid_id' };
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      const doc = InterviewKnowledgeRetriever.getInstance().getById(id);
+      return doc ? { success: true, doc } : { success: false, error: 'not_found' };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:get error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  // ── Interview Knowledge collections (companies/interviews) — same free-tier guarantee as knowledge-doc:* above ──
+  safeHandle('knowledge-collection:create', async (_, params: { name: string; interviewerName?: string; contextNotes?: string }) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      return { success: true, collection: InterviewKnowledgeRetriever.getInstance().createCollection(params) };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-collection:create error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-collection:list', async () => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      return { success: true, collections: InterviewKnowledgeRetriever.getInstance().listCollections() };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-collection:list error:', e);
+      return { success: false, collections: [], error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-collection:update', async (_, id: string, updates: { name?: string; interviewerName?: string | null; contextNotes?: string | null }) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      InterviewKnowledgeRetriever.getInstance().updateCollection(id, updates);
+      return { success: true };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-collection:update error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-collection:delete', async (_, id: string) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      InterviewKnowledgeRetriever.getInstance().deleteCollection(id);
+      return { success: true };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-collection:delete error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-collection:get-active', async () => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      return { success: true, activeCollectionId: InterviewKnowledgeRetriever.getInstance().getActiveCollectionId() };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-collection:get-active error:', e);
+      return { success: false, activeCollectionId: null, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-collection:set-active', async (_, id: string | null) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      InterviewKnowledgeRetriever.getInstance().setActiveCollectionId(id);
+      return { success: true };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-collection:set-active error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-doc:delete', async (_, id: string) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      InterviewKnowledgeRetriever.getInstance().delete(id);
+      return { success: true };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:delete error:', e);
+      return { success: false, error: e?.message || String(e) };
+    }
+  });
+
+  safeHandle('knowledge-doc:get-status', async (_, id: string) => {
+    try {
+      const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+      return { success: true, ...InterviewKnowledgeRetriever.getInstance().getStatus(id) };
+    } catch (e: any) {
+      console.error('[IPC] knowledge-doc:get-status error:', e);
+      return { success: false, status: 'pending', chunkCount: 0, error: e?.message || String(e) };
+    }
+  });
+
   // ── OKF Knowledge Packs (Phase 5 UI) ────────────────────────────
   // All handlers are no-ops (empty result) when okfKnowledgeUi is off, so
   // the renderer can safely call them unconditionally — the UI itself is
