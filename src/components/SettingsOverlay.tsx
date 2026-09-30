@@ -2042,7 +2042,19 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                 setSystemAudioError(message || 'System audio could not be captured.');
             });
 
-            window.electronAPI?.startAudioTest(selectedInput).catch((error) => {
+            // Probe system audio on the output the meeting will capture. Meeting
+            // start reads the SAVED preference (App.tsx), not this dropdown's
+            // auto-picked first entry, so only forward selectedOutput when it is
+            // the saved choice; otherwise the probe keeps the default output.
+            let savedOutput: string | null = null;
+            try {
+                savedOutput = localStorage.getItem('preferredOutputDeviceId');
+            } catch {
+                savedOutput = null;
+            }
+            const probeOutput = selectedOutput && selectedOutput === savedOutput ? selectedOutput : undefined;
+
+            window.electronAPI?.startAudioTest(selectedInput, probeOutput).catch((error) => {
                 console.error("Error starting native microphone test:", error);
                 setMicLevel(0);
             });
@@ -2075,7 +2087,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
         // stale level/error from a previous test survives a tab switch.
         setSystemAudioLevel(0);
         setSystemAudioError(null);
-    }, [isOpen, activeTab, selectedInput]);
+    }, [isOpen, activeTab, selectedInput, selectedOutput]);
 
     return (
         <>

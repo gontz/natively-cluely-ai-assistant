@@ -13638,8 +13638,13 @@ export function initializeIpcHandlers(appState: AppState): void {
     return AudioDevices.getOutputDevices();
   });
 
-  safeHandle('start-audio-test', async (event, deviceId?: string) => {
-    await appState.startAudioTest(deviceId);
+  // outputDeviceId is optional so older renderers that only send the mic id
+  // keep probing the default output, as before.
+  safeHandle('start-audio-test', async (event, deviceId?: string, outputDeviceId?: string) => {
+    await appState.startAudioTest(
+      typeof deviceId === 'string' ? deviceId : undefined,
+      typeof outputDeviceId === 'string' ? outputDeviceId : undefined,
+    );
     return { success: true };
   });
 

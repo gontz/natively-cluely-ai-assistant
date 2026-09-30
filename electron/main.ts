@@ -5911,7 +5911,7 @@ export class AppState {
   }
 
 
-  public async startAudioTest(deviceId?: string): Promise<void> {
+  public async startAudioTest(deviceId?: string, outputDeviceId?: string): Promise<void> {
     // P2-12: guard against two concurrent calls both passing the async permission check
     // before either has created a capture — the second call would orphan the first capture.
     if (this._audioTestStarting) return;
@@ -5928,7 +5928,7 @@ export class AppState {
     }
     this._audioTestStarting = true;
     try {
-      await this._startAudioTestImpl(deviceId);
+      await this._startAudioTestImpl(deviceId, outputDeviceId);
     } finally {
       this._audioTestStarting = false;
     }
@@ -5959,8 +5959,16 @@ export class AppState {
   // (which owns the CoreAudio tap) is debounced.
   private _audioTestSystemProbeTimer: NodeJS.Timeout | null = null;
 
-  private async _startAudioTestImpl(deviceId?: string): Promise<void> {
-    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}`);
+  private async _startAudioTestImpl(deviceId?: string, outputDeviceId?: string): Promise<void> {
+    // The system-audio probe must listen on the same output the meeting will
+    // capture, or a user whose meeting app plays through a non-default device
+    // sees a flat meter here while the meeting works (or the reverse). The
+    // meeting passes the saved output id straight to SystemAudioCapture on both
+    // platforms (a CoreAudio UID on macOS, a WASAPI endpoint id on Windows; both
+    // native backends fall back to the default output when the id is stale), so
+    // the probe does the same. No id keeps the old default-output behaviour.
+    const probeOutputId = this.normalizeDeviceId(outputDeviceId);
+    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}, output: ${probeOutputId || 'default'}`);
     this.stopAudioTest(); // Stop any existing test (also bumps _audioTestEpoch)
     // UX4 hardening: snapshot epoch BEFORE the system-audio probe's awaited
     // permission probe. If stopAudioTest fires while we're awaiting, the
@@ -6099,7 +6107,7 @@ export class AppState {
             return;
           }
           try {
-            this.audioTestSystemCapture = new SystemAudioCapture();
+            this.audioTestSystemCapture = new SystemAudioCapture(probeOutputId);
             attachSystemTestListeners(this.audioTestSystemCapture);
             // INVARIANT: SystemAudioCapture.start() MUST remain synchronous (its
             // native CoreAudio init runs on a background thread and start()
