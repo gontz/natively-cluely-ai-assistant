@@ -17715,6 +17715,54 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Settings > Screen & Vision: live screen context (periodic background
+  // screen description) and the screen-only auto-answer. Both off by default.
+  safeHandle('screen-context:get-settings', () => {
+    const { resolveLiveScreenContextSettings, LIVE_SCREEN_CONTEXT_MIN_INTERVAL_MS, LIVE_SCREEN_CONTEXT_MAX_INTERVAL_MS, LIVE_SCREEN_CONTEXT_DEFAULT_INTERVAL_MS } =
+      require('./services/screen/LiveScreenContextController') as typeof import('./services/screen/LiveScreenContextController');
+    const limits = { minIntervalMs: LIVE_SCREEN_CONTEXT_MIN_INTERVAL_MS, maxIntervalMs: LIVE_SCREEN_CONTEXT_MAX_INTERVAL_MS, defaultIntervalMs: LIVE_SCREEN_CONTEXT_DEFAULT_INTERVAL_MS };
+    try {
+      const s = SettingsManager.getInstance();
+      return {
+        ...resolveLiveScreenContextSettings({
+          liveScreenContextEnabled: s.get('liveScreenContextEnabled'),
+          screenOnlyAutoAnswerEnabled: s.get('screenOnlyAutoAnswerEnabled'),
+          liveScreenContextIntervalMs: s.get('liveScreenContextIntervalMs'),
+        }),
+        ...limits,
+      };
+    } catch (e: any) {
+      console.warn('[IPC] screen-context:get-settings error:', e?.message || e);
+      return { ...resolveLiveScreenContextSettings(null), ...limits };
+    }
+  });
+
+  safeHandle('screen-context:set-settings', (_evt, patch: { enabled?: boolean; screenOnlyAutoAnswer?: boolean; intervalMs?: number }) => {
+    try {
+      const { resolveLiveScreenContextSettings, clampLiveScreenContextInterval } =
+        require('./services/screen/LiveScreenContextController') as typeof import('./services/screen/LiveScreenContextController');
+      const s = SettingsManager.getInstance();
+      const writes: Array<() => boolean> = [];
+      if (typeof patch?.enabled === 'boolean') writes.push(() => s.set('liveScreenContextEnabled', patch.enabled));
+      if (typeof patch?.screenOnlyAutoAnswer === 'boolean') writes.push(() => s.set('screenOnlyAutoAnswerEnabled', patch.screenOnlyAutoAnswer));
+      if (typeof patch?.intervalMs === 'number') writes.push(() => s.set('liveScreenContextIntervalMs', clampLiveScreenContextInterval(patch.intervalMs)));
+      for (const write of writes) {
+        if (!write()) return { success: false, error: 'settings_store_degraded' };
+      }
+      // Start, re-arm or stop the running session's timer now, not on its next tick.
+      appState.onLiveScreenContextSettingsChanged?.();
+      const settings = resolveLiveScreenContextSettings({
+        liveScreenContextEnabled: s.get('liveScreenContextEnabled'),
+        screenOnlyAutoAnswerEnabled: s.get('screenOnlyAutoAnswerEnabled'),
+        liveScreenContextIntervalMs: s.get('liveScreenContextIntervalMs'),
+      });
+      return { success: true, settings };
+    } catch (e: any) {
+      console.warn('[IPC] screen-context:set-settings error:', e?.message || e);
+      return { success: false, error: e?.message || 'failed to update screen context settings' };
+    }
+  });
+
   safeHandle('skills:open-folder', async () => {
     try {
       return await SkillsManager.getInstance().openSkillsFolder();

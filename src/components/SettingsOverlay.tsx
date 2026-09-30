@@ -20,6 +20,7 @@ import { PlansSettings } from './settings/PlansSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { RetrievalSettings } from './settings/RetrievalSettings';
 import { IntelligenceSettings } from './settings/IntelligenceSettings';
+import { ScreenVisionSettings } from './settings/ScreenVisionSettings';
 import { SkillsSettings } from './settings/SkillsSettings';
 import { LocalWhisperModelPanel, type ChannelConfig as LocalWhisperChannelConfig } from './LocalWhisperModelPanel';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
@@ -479,6 +480,7 @@ const SETTINGS_NAV_ORDER = [
     'keybinds',
     'phone-mirror',
     'intelligence',
+    'screen-vision',
     'help',
     'about',
 ];
@@ -2227,6 +2229,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     >
                                         {activeTab === 'intelligence' && navActivePill}
                                         <Cpu size={16} /> {t('Intelligence')}
+                                    </button>
+
+                                    <button
+                                        onClick={() => setActiveTab('screen-vision')}
+                                        className={navItemClass(activeTab === 'screen-vision')}
+                                    >
+                                        {activeTab === 'screen-vision' && navActivePill}
+                                        <Eye size={16} /> {t('Screen & Vision')}
                                     </button>
 
 
@@ -4384,6 +4394,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
                             {activeTab === 'intelligence' && (
                                 <IntelligenceSettings />
+                            )}
+
+                            {activeTab === 'screen-vision' && (
+                                <ScreenVisionSettings />
                             )}
 
                             {activeTab === 'help' && (

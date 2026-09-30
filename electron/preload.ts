@@ -1552,6 +1552,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   skillsOpenFolder: () => ipcRenderer.invoke('skills:open-folder'),
   skillsGetAutoMatch: () => ipcRenderer.invoke('skills:get-auto-match'),
   skillsSetAutoMatch: (enabled: boolean) => ipcRenderer.invoke('skills:set-auto-match', enabled),
+  // Settings > Screen & Vision (live screen context; both features off by default).
+  screenContextGetSettings: () => ipcRenderer.invoke('screen-context:get-settings'),
+  screenContextSetSettings: (patch: { enabled?: boolean; screenOnlyAutoAnswer?: boolean; intervalMs?: number }) =>
+    ipcRenderer.invoke('screen-context:set-settings', patch),
   // Per-skill management: hard-delete. Built-ins are refused inside the
   // manager. Enable/disable is intentionally NOT exposed — users who don't
   // want a skill delete it instead (see SkillsSettings.tsx).
