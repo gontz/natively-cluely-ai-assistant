@@ -266,15 +266,15 @@ describe('the output ceiling is scoped to the surface it was sized for', () => {
   });
 
   test('generateMeetingSummary uses the long-form entry point, not streamChat', () => {
-    const start = src.indexOf('ATTEMPT 0: Custom Provider');
-    assert.ok(start > 0, 'could not locate the custom-provider summary attempt');
-    const body = src.slice(start, start + 2400);
+    const start = src.indexOf('ATTEMPT 0: the selected provider');
+    assert.ok(start > 0, 'could not locate the selected-provider summary attempt');
+    const body = src.slice(start, start + 3000);
     assert.match(body, /this\.streamChatLongForm\(/, 'the summary path must not inherit the live answer cap');
   });
 
   test('a truncated summary is not persisted as a complete one', () => {
-    const start = src.indexOf('ATTEMPT 0: Custom Provider');
-    const body = src.slice(start, start + 2400);
+    const start = src.indexOf('ATTEMPT 0: the selected provider');
+    const body = src.slice(start, start + 3000);
     const truncCheck = body.indexOf('outcome.truncated');
     const returnIdx = body.indexOf('return this.processResponse(text)');
     assert.ok(truncCheck > 0, 'the summary path must observe the truncation outcome');

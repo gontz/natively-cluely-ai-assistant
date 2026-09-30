@@ -122,7 +122,7 @@ interface ElectronAPI {
 
   // LLM Model Management
   getCurrentLlmConfig: () => Promise<{
-    provider: 'ollama' | 'gemini' | 'custom' | 'codex-cli' | 'antigravity';
+    provider: 'ollama' | 'gemini' | 'custom' | 'codex-cli' | 'antigravity' | 'natively' | 'openai' | 'claude' | 'groq' | 'deepseek' | 'nvidia_nim' | 'openrouter' | 'fluxion' | 'litellm' | 'ninerouter';
     /**
      * @deprecated Use `modelId` for selection comparisons and `displayName`
      * for UI labels. Kept as an alias of `modelId` for back-compat.

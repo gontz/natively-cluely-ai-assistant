@@ -479,6 +479,12 @@ const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatt
 
 ${IMAGE_TRUST_TRAILER}`
 
+/**
+ * What getCurrentProvider reports: a Direct Assist provider family, with the
+ * cURL transport folded into "custom" (both are user-defined endpoints).
+ */
+export type CurrentLlmProvider = Exclude<DirectAssistProvider, 'curl'>;
+
 /** Per-call routing/budget overrides for the meeting-notes path. Omitted → today's behaviour. */
 export type MeetingSummaryCallOpts = {
   /** Routes to the gateway's benchmarked extraction path (larger budget, no MiniMax-M3). */
@@ -2405,6 +2411,45 @@ export class LLMHelper {
       // A credential-store or service failure must not take the turn down; it
       // just means no Antigravity rung this time.
       return null;
+    }
+  }
+
+  /**
+   * Which rung leads generateMeetingSummary, and the budget it gets.
+   *
+   * The summary ladder is FIXED (Natively, Codex, Antigravity, Groq, Gemini,
+   * Ollama) and never consulted the selected model. A user whose only key was
+   * OpenAI, Claude, DeepSeek or a gateway (NIM, OpenRouter, Fluxion, LiteLLM,
+   * 9Router) had no rung that could reach it and got no summary at all, and a
+   * Gemini or Groq user was summarised by the ladder's hardcoded model rather
+   * than the one they picked. The selection now leads, through the same chat
+   * path live answers take, and the fixed ladder is the fallback.
+   *
+   * Returns null when the selection must NOT lead:
+   *   - natively: its own rung is already first and forwards the caller's
+   *     purpose/timeout, which the chat path cannot carry;
+   *   - no resolvable selection.
+   *
+   * Each budget is the one that provider's existing rung already had, so leading
+   * with it does not change how long that provider is given. Pure static so the
+   * order decision is testable without a configured helper.
+   */
+  static planMeetingSummaryLead(
+    provider: DirectAssistProvider | null,
+    callerTimeoutMs: number | undefined,
+    codexTimeoutMs: number,
+  ): { provider: DirectAssistProvider; timeoutMs: number } | null {
+    if (!provider || provider === 'natively') return null;
+    switch (provider) {
+      case 'custom':
+      case 'curl':
+        return { provider, timeoutMs: 60000 };
+      case 'ollama':
+        return { provider, timeoutMs: 120000 };
+      case 'codex-cli':
+        return { provider, timeoutMs: Math.max(codexTimeoutMs, 60000) };
+      default:
+        return { provider, timeoutMs: callerTimeoutMs ? callerTimeoutMs + 5000 : 60000 };
     }
   }
 
@@ -12344,11 +12389,20 @@ let isMultimodal = !!(imagePaths?.length);
     }
   }
 
-  public getCurrentProvider(): "ollama" | "gemini" | "custom" | "codex-cli" | "antigravity" {
-    if (this.customProvider) return "custom";
-    if (!this.useOllama && !this.activeCurlProvider && this.isAntigravityModel(this.currentModelId)) return "antigravity";
-    if (this.isCodexCliModel(this.currentModelId)) return "codex-cli";
-    return this.useOllama ? "ollama" : "gemini";
+  /**
+   * The selected provider's family, for labels and performance-profile keys.
+   *
+   * Derived from the same classification Direct Assist dispatches on, so it
+   * cannot drift from the route a turn actually takes. It used to report every
+   * OpenAI, Claude, Groq, DeepSeek and gateway selection as "gemini" and a cURL
+   * provider as "gemini" too; a cURL provider is reported as "custom" (both are
+   * user-defined endpoints). "gemini" remains the answer only for a Gemini
+   * selection or when nothing resolvable is selected, the old default.
+   */
+  public getCurrentProvider(): CurrentLlmProvider {
+    const provider = this.selectedProviderOrNull();
+    if (provider === 'curl') return 'custom';
+    return provider ?? 'gemini';
   }
 
   public getCurrentModel(): string {
@@ -12365,6 +12419,22 @@ let isMultimodal = !!(imagePaths?.length);
     if (this.customProvider) return this.customProvider.id;
     if (this.activeCurlProvider) return this.activeCurlProvider.id;
     return this.useOllama ? this.ollamaModel : this.currentModelId;
+  }
+
+  /**
+   * The selected provider's family, or null when nothing resolvable is
+   * selected. getDirectAssistSelection throws on a blank or unadapted model id;
+   * a custom, cURL or Ollama selection is still a selection then, so those are
+   * recovered from the flags rather than dropped.
+   */
+  private selectedProviderOrNull(): DirectAssistProvider | null {
+    try {
+      return this.getDirectAssistSelection().provider;
+    } catch {
+      if (this.customProvider) return 'custom';
+      if (this.activeCurlProvider) return 'curl';
+      return this.useOllama ? 'ollama' : null;
+    }
   }
 
   /**
@@ -13316,7 +13386,7 @@ let isMultimodal = !!(imagePaths?.length);
   /**
    * Robust Meeting Summary Generation
    * Strategy:
-   * 0. Custom / cURL Provider (if user selected one — always takes priority)
+   * 0. The selected provider, through the chat path (see planMeetingSummaryLead)
    * 1. Natively API (if configured)
    * 2. Groq (if context text < 100k tokens approx)
    * 3. Gemini Flash (Retry 2x)
@@ -13352,10 +13422,18 @@ let isMultimodal = !!(imagePaths?.length);
 
     const contents = [{ text: `${systemPrompt}\n\nCONTEXT:\n${context}` }];
 
-    // ATTEMPT 0: Custom Provider (highest priority — user explicitly chose this)
-    if (this.customProvider || this.activeCurlProvider) {
+    // ATTEMPT 0: the selected provider (highest priority — the user chose it).
+    // Custom and cURL selections run here exactly as before; see
+    // planMeetingSummaryLead for which other selections lead and why.
+    const lead = LLMHelper.planMeetingSummaryLead(
+      this.selectedProviderOrNull(), opts?.timeoutMs, this.codexCliConfig.timeoutMs,
+    );
+    if (lead) {
+      // withTimeout only races; aborting is what stops a timed-out stream
+      // (same reasoning as the Antigravity rung below). Aborted in `finally`.
+      const leadAbort = new AbortController();
       try {
-        console.log(`[LLMHelper] Attempting custom provider for summary...`);
+        console.log(`[LLMHelper] Attempting selected provider (${lead.provider}) for summary...`);
         // Collect the async generator into a Promise so withTimeout works.
         // ignoreKnowledgeMode=true: meeting summaries must never go through the
         // profile/knowledge intercept — it would corrupt the output.
@@ -13364,7 +13442,9 @@ let isMultimodal = !!(imagePaths?.length);
         // summaries, which then passed the length check below and were
         // persisted as complete. `outcome` also lets that be DETECTED rather
         // than inferred from the text.
-        const { stream, outcome } = this.streamChatLongForm(`Context:\n${context}`, undefined, undefined, systemPrompt, true);
+        const { stream, outcome } = this.streamChatLongForm(
+          `Context:\n${context}`, undefined, undefined, systemPrompt, true, false, [], leadAbort.signal,
+        );
         const collectChunks = async (): Promise<string> => {
           let result = '';
           for await (const chunk of stream) {
@@ -13372,20 +13452,25 @@ let isMultimodal = !!(imagePaths?.length);
           }
           return result;
         };
-        const text = await this.withTimeout(collectChunks(), 60000, 'Custom Provider Summary');
+        const text = await this.withTimeout(collectChunks(), lead.timeoutMs, `Selected Provider Summary (${lead.provider})`);
         if (outcome.truncated) {
           // Do not persist an incomplete summary as the meeting's summary, and
           // do not silently swap the user's chosen provider either — fall to
           // the next ATTEMPT the same way any other failure here does.
-          console.warn(`[LLMHelper] ⚠️ Custom provider summary stopped early (${outcome.reason}) — falling back rather than saving a partial summary.`);
+          console.warn(`[LLMHelper] ⚠️ Selected provider (${lead.provider}) summary stopped early (${outcome.reason}) — falling back rather than saving a partial summary.`);
         } else if (text.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Custom provider summary generated successfully.`);
+          console.log(`[LLMHelper] ✅ Selected provider (${lead.provider}) summary generated successfully.`);
           return this.processResponse(text);
         }
       } catch (e: any) {
-        console.warn(`[LLMHelper] ⚠️ Custom provider summary failed: ${e.message}. Falling back...`);
+        console.warn(`[LLMHelper] ⚠️ Selected provider (${lead.provider}) summary failed: ${e.message}. Falling back...`);
+      } finally {
+        leadAbort.abort();
       }
     }
+    // A fallback rung for the provider that just led would ask the same
+    // provider the same thing again; those rungs are skipped below.
+    const ledWith = lead?.provider ?? null;
 
     // ATTEMPT 1: Natively API (if configured — first in chain)
     // Inner fetch timeout: caller's timeoutMs, default 8s (AbortSignal.timeout in
@@ -13414,7 +13499,7 @@ let isMultimodal = !!(imagePaths?.length);
     }
 
     // ATTEMPT 2: Codex CLI (if user has it enabled and signed in — text-only path)
-    if (this.isCodexAvailable()) {
+    if (ledWith !== 'codex-cli' && this.isCodexAvailable()) {
       console.log(`[LLMHelper] Attempting Codex CLI for summary...`);
       try {
         const text = await this.withTimeout(
@@ -13439,7 +13524,7 @@ let isMultimodal = !!(imagePaths?.length);
     // Consumes the streaming generator rather than adding a non-streaming path:
     // AntigravityService only exposes stream(), and one more shape to maintain
     // is not worth saving a join here.
-    const antigravitySummaryModel = this.antigravityFallbackModel();
+    const antigravitySummaryModel = ledWith === 'antigravity' ? null : this.antigravityFallbackModel();
     if (antigravitySummaryModel) {
       console.log(`[LLMHelper] Attempting Antigravity for summary...`);
       // withTimeout only RACES: when the timer wins, the loser keeps running.
@@ -13599,7 +13684,7 @@ let isMultimodal = !!(imagePaths?.length);
     // getDeniedDataScopes is cached). Uses resolveLocalSystemPrompt so a 7B
     // coder model gets the tiny system prompt and isn't overwhelmed by the
     // meeting-summarisation instructions.
-    if (this.useOllama) {
+    if (this.useOllama && ledWith !== 'ollama') {
       try {
         console.log(`[LLMHelper] ⚠️ Cloud providers exhausted. Falling back to local Ollama for summary...`);
         const ollamaSystemPrompt = this.resolveLocalSystemPrompt(systemPrompt);
