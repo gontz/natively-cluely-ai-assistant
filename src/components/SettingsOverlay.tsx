@@ -2031,7 +2031,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             // duration of the same test, so both meters are driven by the one
             // startAudioTest() call below — there is no separate start/stop to make.
             const unsubscribeSystemLevel = window.electronAPI?.onAudioTestSystemLevel?.((level) => {
-                setSystemAudioError(null);
+                // Level events keep arriving for silent (zero-valued) chunks, so
+                // only real movement on the bar clears a notice. Otherwise the main
+                // process's "no system audio detected" diagnosis would be wiped by
+                // the very next silent chunk and never be seen.
+                if (level >= 0.01) setSystemAudioError(null);
                 setSystemAudioLevel(Math.max(0, Math.min(100, level * 100)));
             });
             // A system-audio failure is reported, never left as a flat bar. A silent

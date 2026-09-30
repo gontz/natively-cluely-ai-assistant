@@ -15,6 +15,11 @@ import path from "path"
 import fs from "fs"
 import os from "os"
 import { SystemAudioHealthClassifier } from "./audio/systemAudioHealthClassifier.mjs"
+import {
+  AUDIO_TEST_NO_SYSTEM_AUDIO_MS,
+  chunkHasSystemAudioSignal,
+  describeNoSystemAudioInTest,
+} from "./audio/audioTestSystemSilence.mjs"
 import { FatalMainProcessCoordinator } from "./utils/fatalMainProcess"
 import { installResilientDnsLookup } from "./utils/resilientDnsLookup"
 import { resolveDebugLogPath } from "./utils/debugLogPath.mjs"
@@ -5958,6 +5963,18 @@ export class AppState {
   // nothing to tear down. The mic-level probe stays eager; only the system probe
   // (which owns the CoreAudio tap) is debounced.
   private _audioTestSystemProbeTimer: NodeJS.Timeout | null = null;
+  // Armed when the system probe starts; fires a "no system audio detected"
+  // diagnosis if no signal-bearing chunk arrives within
+  // AUDIO_TEST_NO_SYSTEM_AUDIO_MS. Cleared on first signal, on a probe error,
+  // and in stopAudioTest so a stale test never reports into the next one.
+  private _audioTestNoSystemAudioTimer: NodeJS.Timeout | null = null;
+
+  private clearAudioTestNoSystemAudioTimer(): void {
+    if (this._audioTestNoSystemAudioTimer) {
+      clearTimeout(this._audioTestNoSystemAudioTimer);
+      this._audioTestNoSystemAudioTimer = null;
+    }
+  }
 
   private async _startAudioTestImpl(deviceId?: string, outputDeviceId?: string): Promise<void> {
     // The system-audio probe must listen on the same output the meeting will
@@ -6025,8 +6042,39 @@ export class AppState {
     // missing screen-recording grant doesn't block the mic level meter.
     // Listeners include a TCC zero-fill detector (peak-to-peak < 100 for
     // the entire probe = TCC silently denied even though SCK started).
+    const armNoSystemAudioDiagnosis = (capture: SystemAudioCapture) => {
+      this.clearAudioTestNoSystemAudioTimer();
+      this._audioTestNoSystemAudioTimer = setTimeout(() => {
+        this._audioTestNoSystemAudioTimer = null;
+        if (!isCurrentTest() || this.audioTestSystemCapture !== capture) return;
+        // Windows copy can point at a mismatch between the selected endpoint
+        // and the Windows default; the default id is only meaningful there.
+        let defaultOutputId: string | undefined;
+        if (process.platform === 'win32' && probeOutputId) {
+          try {
+            const NativeModule: any = loadNativeModule();
+            if (NativeModule && typeof NativeModule.getDefaultOutputDeviceId === 'function') {
+              defaultOutputId = NativeModule.getDefaultOutputDeviceId() || undefined;
+            }
+          } catch { /* keep the message that does not mention the default */ }
+        }
+        const message = describeNoSystemAudioInTest({
+          platform: process.platform,
+          probeOutputId,
+          defaultOutputId,
+        });
+        console.warn(`[Main] AudioTest: no system audio signal in ${Math.round(AUDIO_TEST_NO_SYSTEM_AUDIO_MS / 1000)}s (output: ${probeOutputId || 'default'}).`);
+        for (const target of broadcastTargets()) {
+          this.sendToWindow(target, 'audio-test-system-error', message);
+        }
+      }, AUDIO_TEST_NO_SYSTEM_AUDIO_MS);
+    };
+
     const attachSystemTestListeners = (capture: SystemAudioCapture) => {
       capture.on('data', (chunk: Buffer) => {
+        if (this._audioTestNoSystemAudioTimer && this.audioTestSystemCapture === capture && chunkHasSystemAudioSignal(chunk)) {
+          this.clearAudioTestNoSystemAudioTimer();
+        }
         const targets = broadcastTargets();
         if (targets.length === 0) return;
         const level = computeRmsLevel(chunk);
@@ -6035,6 +6083,9 @@ export class AppState {
         }
       });
       capture.on('error', (err: Error) => {
+        // A hard error already explains the flat meter; don't follow it with
+        // a second, vaguer "no audio" message.
+        if (this.audioTestSystemCapture === capture) this.clearAudioTestNoSystemAudioTimer();
         console.error('[Main] AudioTest System Error:', err);
         for (const target of broadcastTargets()) {
           this.sendToWindow(target, 'audio-test-system-error', err.message || String(err));
@@ -6122,6 +6173,8 @@ export class AppState {
             if (!isCurrentTest()) {
               try { this.audioTestSystemCapture?.stop(); } catch { /* ignore */ }
               this.audioTestSystemCapture = null;
+            } else {
+              armNoSystemAudioDiagnosis(this.audioTestSystemCapture);
             }
           } catch (probeErr: any) {
             console.warn('[Main] Deferred system-audio probe failed to start:', probeErr);
@@ -6161,6 +6214,7 @@ export class AppState {
       clearTimeout(this._audioTestSystemProbeTimer);
       this._audioTestSystemProbeTimer = null;
     }
+    this.clearAudioTestNoSystemAudioTimer();
     // Also disable pre-warm so stop() doesn't pre-warm a new monitor that would
     // keep the DSP thread alive after the settings panel is closed. Mirrors
     // the endMeeting() pattern where disablePreWarm() is called before stop().
