@@ -384,6 +384,7 @@ const REMARK_PLUGINS = [remarkGfm, remarkMath];
 const REHYPE_PLUGINS: any[] = [[rehypeKatex, { throwOnError: false, strict: false, errorColor: '#cc0000' }]];
 
 import { DOM_CONTEXT_MAX_CHARS } from '../constants/domCapture';
+import { KnowledgeCitationList, KnowledgeDocViewer } from './knowledge/KnowledgeCitations';
 
 // ── Streaming-height headroom buffer (native OS window resize during token
 // streaming) ─────────────────────────────────────────────────────────────
@@ -482,6 +483,9 @@ interface Message {
   // mapping table — the point is telling the user which provider actually
   // received their request and got billed, not a pretty label.
   fallbackNotice?: string;
+  // Interview Knowledge sources that backed this answer (collapsed "Sources"
+  // on the card; each opens its document). Absent when none were retrieved.
+  citations?: Array<{ sourceId: string; fileName: string; text: string }>;
   isCode?: boolean;
   intent?: string;
   // Verified code execution: set when the code in this message passed N executed
@@ -1239,6 +1243,9 @@ const MessageRow = React.memo(
                 <HelpCircle className="w-2.5 h-2.5 flex-shrink-0" />
                 <span className="truncate max-w-[260px]">{msg.fallbackNotice}</span>
               </div>
+            )}
+            {msg.role === 'system' && msg.citations && msg.citations.length > 0 && (
+              <KnowledgeCitationList citations={msg.citations} />
             )}
             {/* Verified badge: the code in this message passed executed tests. */}
             {msg.role === 'system' && msg.codeVerified && (
@@ -7813,6 +7820,20 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
         const pendingMsgIdSnapshot = streamingMsgIdRef.current;
         const authoritativeText = finalText || pendingTextSnapshot;
 
+        // Interview Knowledge sources: merged onto the streamed row by id,
+        // independent of the deferred-reveal / instant commit paths below
+        // (both spread the existing row, so the field survives either).
+        const citationsSnapshot = data?.citations;
+        if (citationsSnapshot?.length && pendingMsgIdSnapshot != null) {
+          setMessages((prev) => {
+            const idx = prev.findLastIndex((m) => m.id === pendingMsgIdSnapshot);
+            if (idx === -1) return prev;
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], citations: citationsSnapshot };
+            return updated;
+          });
+        }
+
         setIsProcessing(false);
 
         // Calculate latency if we have a start time
@@ -11550,6 +11571,7 @@ Provide only the answer, nothing else.`;
           </motion.div>
       {/* end always-mounted shell */}
     </div>
+    <KnowledgeDocViewer />
     </>
   );
 };
