@@ -1126,7 +1126,14 @@ export class IntelligenceEngine extends EventEmitter {
             try { this.llmHelper.setGroqFastTextMode(true); } catch { /* routing hint only */ }
         }
         try {
-            await this.runWhatShouldISay(trigger.lastQuestion, trigger.confidence ?? undefined);
+            // Live screen context rides along only when the host resolved one;
+            // without it the call is exactly what it was before.
+            await this.runWhatShouldISay(
+                trigger.lastQuestion,
+                trigger.confidence ?? undefined,
+                undefined,
+                trigger.screenContext ? { screenContext: trigger.screenContext } : undefined,
+            );
         } finally {
             this.nextRunIsAutomatic = false;
             if (fastAuto && !previousFastMode) {
@@ -1385,7 +1392,7 @@ export class IntelligenceEngine extends EventEmitter {
     async runAutoAnswer(question: {
         id: string; text: string; confidence: number; answerability: number; dialogueAct: string;
         isFollowUp: boolean; endpointSource?: string; candidateGeneration: number;
-    }, options: { reuseSpeculative: boolean; context: string }): Promise<void> {
+    }, options: { reuseSpeculative: boolean; context: string; screenContext?: any }): Promise<void> {
         return this.handleSuggestionTrigger({
             context: options.context,
             lastQuestion: question.text,
@@ -1398,6 +1405,7 @@ export class IntelligenceEngine extends EventEmitter {
             endpointSource: question.endpointSource,
             candidateGeneration: question.candidateGeneration,
             reuseSpeculative: options.reuseSpeculative,
+            screenContext: options.screenContext,
         });
     }
 

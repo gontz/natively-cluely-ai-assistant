@@ -36,6 +36,7 @@ import {
 } from './VisionProviderFallbackChain';
 import { getImageOptimizer, ImageOptimizer } from './ImageOptimizer';
 import { buildVisionProviders, VisionProviderBuildInputs } from './VisionProviderRegistry';
+import { orderVisionProvidersGeminiFirst } from './visionProviderOrder';
 
 export type UserAction =
   | 'manual_use_screen'
@@ -92,6 +93,20 @@ export interface ScreenUnderstandingRequest {
   screenUnderstandingMode?: ScreenUnderstandingMode;
   technicalInterviewVisionFirst?: boolean;
   providerPolicy?: ProviderPolicy;
+  /**
+   * Replaces SCREEN_UNDERSTANDING_TOTAL_BUDGET_MS for this call only. That
+   * budget bounds how long a user waits for a live answer; a background caller
+   * (live screen context, nothing waiting on it) inherited it by accident, and
+   * a multi-rung cascade sharing one 6s budget timed out rung after rung.
+   */
+  totalDeadlineMsOverride?: number;
+  /**
+   * 'gemini_first': move the Gemini rungs to the head of the normal provider
+   * list, keeping every other rung (and every mode/scope filter) as fallback.
+   * Used by live screen context so its description matches the model family
+   * the live answer is usually written with.
+   */
+  providerPreference?: 'gemini_first';
 }
 
 export interface ProviderPolicy {
@@ -114,6 +129,13 @@ export interface ScreenUnderstandingResult {
   tables?: Array<{ title?: string; rows: string[][]; markdown?: string }>;
   errors?: string[];
   taskDetected?: string;
+  /**
+   * The vision model's own verdict, from the same structured-extraction call
+   * that produced extractedText: does the screen pose a question or problem
+   * that has not been answered yet? Only the 'transcribe' path asks for it;
+   * undefined everywhere else, and consumers must treat undefined as false.
+   */
+  hasUnansweredQuestion?: boolean;
   confidence: number;
   imagePaths: string[];
   optimizedImagePath?: string;
@@ -274,8 +296,11 @@ export class ScreenUnderstandingService {
     // buildVisionProviders(); tests can substitute their own list via the
     // optional `request.providerPolicy.__providersOverride` hook (untyped to
     // keep the public contract clean).
-    const providers: VisionProviderConfig[] = (request.providerPolicy as any)?.__providersOverride
+    const builtProviders: VisionProviderConfig[] = (request.providerPolicy as any)?.__providersOverride
       || buildVisionProviders(this.collectBuildInputs(request, mode, policy));
+    const providers = request.providerPreference === 'gemini_first'
+      ? orderVisionProvidersGeminiFirst(builtProviders)
+      : builtProviders;
 
     if (providers.length === 0) {
       warnings.push('No vision provider configured');
@@ -325,7 +350,7 @@ export class ScreenUnderstandingService {
       // the budget is not worth delaying the answer for; failing fast to "no
       // screen context" is the cheaper outcome, and the healthy case (a cloud
       // vision rung returning in 2-4s) never reaches this ceiling.
-      totalDeadlineMs: SCREEN_UNDERSTANDING_TOTAL_BUDGET_MS,
+      totalDeadlineMs: request.totalDeadlineMsOverride ?? SCREEN_UNDERSTANDING_TOTAL_BUDGET_MS,
       health: this.rungHealth,
     });
 
@@ -449,6 +474,7 @@ export class ScreenUnderstandingService {
     screenType?: ScreenType;
     taskDetected?: string;
     confidence?: number;
+    hasUnansweredQuestion?: boolean;
   } {
     const trimmed = rawOutput.trim();
     const unfenced = stripWholeReplyCodeFence(trimmed);
@@ -464,6 +490,7 @@ export class ScreenUnderstandingService {
           screenType: typeof parsed.screenType === 'string' ? parsed.screenType : undefined,
           taskDetected: typeof parsed.taskDetected === 'string' ? parsed.taskDetected : undefined,
           confidence: typeof parsed.confidence === 'number' ? parsed.confidence : undefined,
+          hasUnansweredQuestion: typeof parsed.hasUnansweredQuestion === 'boolean' ? parsed.hasUnansweredQuestion : undefined,
         };
       } catch {
         // fall through to plain-text path
@@ -564,6 +591,7 @@ export class ScreenUnderstandingService {
       tables: structured.tables,
       errors: structured.errors,
       taskDetected,
+      hasUnansweredQuestion: structured.hasUnansweredQuestion,
       confidence: structured.confidence ?? 0.85,
       imagePaths: ctx.imagePaths,
       imageHash: ctx.imageHash,

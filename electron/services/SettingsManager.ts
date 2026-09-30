@@ -103,6 +103,12 @@ export interface AppSettings {
     // with `answerTypes`. Only an explicit `false` turns both off; the
     // /skill-name prefix keeps working either way.
     skillAutoMatchEnabled?: boolean;
+    // Live screen context (services/screen/LiveScreenContextController.ts).
+    // All three are opt-in; unset means off / the default interval. Each tick
+    // during a live session can cost a vision API call.
+    liveScreenContextEnabled?: boolean;
+    screenOnlyAutoAnswerEnabled?: boolean;
+    liveScreenContextIntervalMs?: number;
     // External optional provider. Default false: do not spawn Ollama unless
     // the user selects an Ollama model or explicitly opts into auto-start.
     autoStartOllama?: boolean;

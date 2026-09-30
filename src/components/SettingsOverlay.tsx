@@ -22,6 +22,7 @@ import { PlansSettings } from './settings/PlansSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { RetrievalSettings } from './settings/RetrievalSettings';
 import { IntelligenceSettings } from './settings/IntelligenceSettings';
+import { ScreenVisionSettings } from './settings/ScreenVisionSettings';
 import { SkillsSettings } from './settings/SkillsSettings';
 import { LocalWhisperModelPanel, type ChannelConfig as LocalWhisperChannelConfig } from './LocalWhisperModelPanel';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
@@ -482,6 +483,7 @@ const SETTINGS_NAV_ORDER = [
     'phone-mirror',
     'intelligence',
     'knowledge',
+    'screen-vision',
     'help',
     'about',
 ];
@@ -2238,6 +2240,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     >
                                         {activeTab === 'knowledge' && navActivePill}
                                         <BookOpen size={16} /> {t('Knowledge')}
+                                    </button>
+
+                                    <button
+                                        onClick={() => setActiveTab('screen-vision')}
+                                        className={navItemClass(activeTab === 'screen-vision')}
+                                    >
+                                        {activeTab === 'screen-vision' && navActivePill}
+                                        <Eye size={16} /> {t('Screen & Vision')}
                                     </button>
 
 
@@ -4399,6 +4409,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
                             {activeTab === 'knowledge' && (
                                 <KnowledgeDocsPanel />
+                            )}
+
+                            {activeTab === 'screen-vision' && (
+                                <ScreenVisionSettings />
                             )}
 
                             {activeTab === 'help' && (

@@ -1099,6 +1099,10 @@ export interface ElectronAPI {
   // "Apply skills automatically" (settings key skillAutoMatchEnabled; unset reads as true).
   skillsGetAutoMatch: () => Promise<boolean>;
   skillsSetAutoMatch: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; error?: string }>;
+  // Settings > Screen & Vision: live screen context. Unset reads as off.
+  screenContextGetSettings: () => Promise<{ enabled: boolean; screenOnlyAutoAnswer: boolean; intervalMs: number; minIntervalMs: number; maxIntervalMs: number; defaultIntervalMs: number }>;
+  screenContextSetSettings: (patch: { enabled?: boolean; screenOnlyAutoAnswer?: boolean; intervalMs?: number }) =>
+    Promise<{ success: boolean; settings?: { enabled: boolean; screenOnlyAutoAnswer: boolean; intervalMs: number }; error?: string }>;
   // Per-skill management: hard-delete. Built-ins are refused inside the
   // manager. Enable/disable is intentionally NOT exposed on the renderer —
   // users who don't want a skill delete it instead.

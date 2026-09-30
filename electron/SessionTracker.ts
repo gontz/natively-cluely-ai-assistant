@@ -85,6 +85,13 @@ export interface SuggestionTrigger {
     candidateGeneration?: number;
     /** The controller verified (by id or embedding cosine) that the speculative cache answers THIS question. */
     reuseSpeculative?: boolean;
+    /**
+     * Background screen description (live screen context), resolved by the
+     * host right before dispatch. A ScreenUnderstandingResult, which already
+     * carries the PromptAssembler-compatible fields; absent when the feature
+     * is off or no recent description exists.
+     */
+    screenContext?: any;
 }
 
 // Context item matching Swift ContextManager structure

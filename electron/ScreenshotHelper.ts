@@ -462,6 +462,9 @@ export class ScreenshotHelper {
   private screenshotQueue: string[] = []
   private extraScreenshotQueue: string[] = []
   private readonly MAX_SCREENSHOTS = 5
+  /** Background (live screen context) captures, outside the user's queues. */
+  private backgroundScreenshots: string[] = []
+  private static readonly BACKGROUND_KEEP = 2
 
   private readonly screenshotDir: string
   private readonly extraScreenshotDir: string
@@ -760,6 +763,38 @@ export class ScreenshotHelper {
       console.error('[ScreenshotHelper] Failed to take screenshot:', error);
       throw new Error(`Failed to take screenshot: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  /**
+   * Full-screen capture for background use (live screen context). Same
+   * capture path as takeScreenshot(), including the macOS Screen Recording
+   * check, which throws rather than prompting. Deliberately NOT added to the
+   * user's screenshot queues: a timer must not evict screenshots the user took
+   * or attach itself to their next manual question. Keeps only the last
+   * BACKGROUND_KEEP files in its own folder.
+   */
+  public async takeBackgroundScreenshot(preferredDisplay?: Electron.Display): Promise<string> {
+    const dir = path.join(this.screenshotDir, 'live-context')
+    await fs.promises.mkdir(dir, { recursive: true })
+    const screenshotPath = path.join(dir, `${uuidv4()}.png`)
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      await this.captureWithDesktopCapturer(screenshotPath, undefined, preferredDisplay)
+    } else {
+      await shellExecAsync(this.getScreenshotCommand(screenshotPath, false))
+    }
+    this.backgroundScreenshots.push(screenshotPath)
+    while (this.backgroundScreenshots.length > ScreenshotHelper.BACKGROUND_KEEP) {
+      const removed = this.backgroundScreenshots.shift()
+      if (removed) await fs.promises.unlink(removed).catch(() => {})
+    }
+    return screenshotPath
+  }
+
+  /** Delete every background capture (session end). */
+  public async clearBackgroundScreenshots(): Promise<void> {
+    const paths = this.backgroundScreenshots
+    this.backgroundScreenshots = []
+    await Promise.all(paths.map((p) => fs.promises.unlink(p).catch(() => {})))
   }
 
   public async takeSelectiveScreenshot(captureArea?: Electron.Rectangle): Promise<string> {

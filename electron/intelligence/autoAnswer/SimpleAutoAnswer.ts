@@ -293,6 +293,13 @@ export class SimpleAutoAnswerEngine {
         if (this.judgeAbort) { try { this.judgeAbort.abort(); } catch { /* never break ingest */ } this.judgeAbort = null; }
     }
 
+    /**
+     * Interviewer speech is still being resolved (buffered finals, or a judge
+     * verdict in flight). The screen-only auto-answer yields to it: a spoken
+     * question gets the screen context attached anyway.
+     */
+    hasPendingInterviewerSpeech(): boolean { return this.pending.length > 0 || this.judgeAbort !== null; }
+
     onMeetingStart(): void { this.reset(); }
     onMeetingStop(): void { this.reset(); }
     /**
