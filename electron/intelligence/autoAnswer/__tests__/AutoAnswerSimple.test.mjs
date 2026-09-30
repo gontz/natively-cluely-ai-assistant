@@ -910,3 +910,93 @@ test('isMidWordCut: the seam rule, case by case', () => {
   assert.equal(isMidWordCut('exactly this', 'exactly this'), false);
   assert.equal(isMidWordCut('', 'anything'), false);
 });
+
+// ── Prefetch slot release (2026-09-30) ───────────────────────────────────
+// A prefetch the judge rejected used to sit in the engine's one speculative
+// slot until expiry (or until a real dispatch cleared it), refusing the NEXT
+// candidate's prefetch. A definitive rejection now releases it; a superseded
+// or incomplete verdict does not, because the grown question can still reuse
+// the stream. Ported from rishikeshl0510/natively-cluely-ai-assistant@59c42e8.
+
+function withPrefetchSpy(h) {
+  const prefetched = [];
+  const abandoned = [];
+  h.engine.host.prefetchAnswer = (id) => prefetched.push(id);
+  h.engine.host.speculativeSnapshot = () => ({ questionId: null, text: null });
+  h.engine.host.abandonSpeculative = (id) => abandoned.push(id);
+  return { prefetched, abandoned };
+}
+
+test('prefetch slot: a not-question verdict releases the prefetch it rejected', async () => {
+  const h = makeSimple(async () => NO);
+  const spy = withPrefetchSpy(h);
+  h.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await h.advance(STABILITY_MS + 200);
+  assert.equal(spy.prefetched.length, 1);
+  assert.deepEqual(spy.abandoned, spy.prefetched, 'the rejected candidate id is released');
+});
+
+test('prefetch slot: a low-answerability verdict releases it too', async () => {
+  const h = makeSimple(async () => YES({ action: 'answer', answerability: 0.2 }));
+  const spy = withPrefetchSpy(h);
+  h.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await h.advance(STABILITY_MS + 200);
+  assert.deepEqual(h.texts(), []);
+  assert.equal(spy.prefetched.length, 1);
+  assert.deepEqual(spy.abandoned, spy.prefetched);
+});
+
+test('prefetch slot: a judge failure with no fallback dispatch releases it; with a fallback it does not', async () => {
+  const h = makeSimple(async () => { throw new Error('provider down'); });
+  const spy = withPrefetchSpy(h);
+  h.interviewer('So the first thing to know about this system is that it stores everything in one place.');
+  await h.advance(STABILITY_MS + 200);
+  assert.deepEqual(h.texts(), []);
+  assert.equal(spy.prefetched.length, 1);
+  // A failed judge clears lastJudgedKey, so the commit may re-judge under a new
+  // id; releasing an id the engine does not hold is a no-op there.
+  assert.ok(spy.abandoned.includes(spy.prefetched[0]), 'nothing will adopt it, so it is released');
+
+  const h2 = makeSimple(async () => { throw new Error('provider down'); });
+  const spy2 = withPrefetchSpy(h2);
+  h2.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await h2.advance(STABILITY_MS + 200);
+  assert.equal(h2.texts().length, 1, 'the trailing-? fallback dispatches');
+  assert.deepEqual(spy2.abandoned, [], 'and that dispatch may still adopt the prefetch');
+});
+
+test('prefetch slot: an answered, incomplete or superseded verdict keeps the prefetch', async () => {
+  const yes = makeSimple(async () => YES());
+  const yesSpy = withPrefetchSpy(yes);
+  yes.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await yes.advance(STABILITY_MS + 200);
+  assert.equal(yes.texts().length, 1);
+  assert.deepEqual(yesSpy.abandoned, [], 'the dispatch adopts it');
+
+  const inc = makeSimple(async () => YES({ complete: false, act: 'incomplete' }));
+  const incSpy = withPrefetchSpy(inc);
+  inc.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await inc.advance(STABILITY_MS + 200);
+  assert.deepEqual(inc.texts(), []);
+  assert.deepEqual(incSpy.abandoned, [], 'more speech may finish the question and reuse the stream');
+
+  const resolvers = [];
+  const sup = makeSimple(() => new Promise((r) => resolvers.push(r)));
+  const supSpy = withPrefetchSpy(sup);
+  sup.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await sup.advance(EARLY_JUDGE_MS + 60);
+  sup.interviewer('and also how about the indexes on it?', true);   // supersedes
+  resolvers[0](NO);
+  await flush(); await flush();
+  assert.deepEqual(supSpy.abandoned, [], 'a superseded verdict never releases');
+});
+
+test('prefetch slot: a host whose abandonSpeculative throws never breaks the pipeline', async () => {
+  const h = makeSimple(async () => NO);
+  h.engine.host.prefetchAnswer = () => {};
+  h.engine.host.speculativeSnapshot = () => ({ questionId: null, text: null });
+  h.engine.host.abandonSpeculative = () => { throw new Error('boom'); };
+  h.interviewer('Why did you choose PostgreSQL over the alternatives here?');
+  await h.advance(STABILITY_MS + 200);
+  assert.ok(h.state.skips.includes('not_question'));
+});

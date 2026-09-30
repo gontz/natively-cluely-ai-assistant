@@ -1168,7 +1168,7 @@ export class IntelligenceEngine extends EventEmitter {
      * running them in series is most of the perceived latency. This starts a
      * SPECULATIVE run keyed to the candidate; if the verdict says fire, the
      * dispatch reuses the stream already in flight (`reuseSpeculative`), and
-     * if it says no, the speculative text simply expires unused.
+     * if it says no, SimpleAutoAnswer releases it (abandonSpeculative).
      *
      * Guards mirror maybeSpeculate: only from an idle/assist engine, never on
      * top of a live stream or an existing speculation, never inside the
@@ -1177,7 +1177,13 @@ export class IntelligenceEngine extends EventEmitter {
      */
     prefetchAutoAnswer(questionId: string, text: string): void {
         if (this.activeMode !== 'idle' && this.activeMode !== 'assist') return;
-        if (this.speculativeText !== null) return;
+        if (this.speculativeText !== null) {
+            // Same "still usable" rule as getSpeculativeSnapshot: a leftover
+            // result past its expiry can never be adopted, so it must not hold
+            // the one speculative slot until some real dispatch clears it.
+            if (Date.now() <= this.speculativeTextExpiry) return;
+            this.clearSpeculativeResult();
+        }
         if (this.speculativeTimer !== null) return;
         if (Date.now() - this.lastTriggerTime < this.triggerCooldown) return;
         const trimmed = (text ?? '').trim();
@@ -1187,6 +1193,30 @@ export class IntelligenceEngine extends EventEmitter {
         console.log(`[IntelligenceEngine] Auto Answer prefetch fired while the judge decides`, { questionId, length: trimmed.length });
         this.runWhatShouldISay(trimmed, 0.9, undefined, { speculative: true })
             .catch(err => console.error('[IntelligenceEngine] Auto Answer prefetch error:', err));
+    }
+
+    /**
+     * The Auto Answer judge ruled that this prefetched candidate will not be
+     * answered. Release its speculative result now instead of letting it
+     * occupy the slot until expiry, where it refuses the next candidate's
+     * prefetch. No-op when `questionId` is no longer the one held, so a newer
+     * prefetch's state is never touched. A stream still running is not
+     * aborted: it stays busy (activeMode), completes unadoptable, and any real
+     * dispatch supersedes it as usual.
+     */
+    abandonSpeculative(questionId: string): void {
+        if (this.speculativeQuestionId !== questionId) return;
+        if (this.speculativeText === null) return;
+        console.log(`[IntelligenceEngine] Auto Answer prefetch released: the judge will not use it`, { questionId });
+        this.clearSpeculativeResult();
+    }
+
+    private clearSpeculativeResult(): void {
+        this.speculativeText = null;
+        this.speculativeTextExpiry = Infinity;
+        this.speculativeQuestionId = null;
+        this.speculativeAnswer = null;
+        this.speculativeAdoptedGenerationId = null;
     }
 
     /**

@@ -145,6 +145,20 @@ export interface ScreenUnderstandingResult {
  */
 export const SCREEN_UNDERSTANDING_TOTAL_BUDGET_MS = 6000;
 
+/**
+ * Unwraps a reply that is entirely one markdown code fence (```json ... ``` or
+ * bare ``` ... ```). Despite "Return JSON only" in the prompt, vision models
+ * sometimes fence their JSON anyway; the strict {...} check in
+ * extractStructured then fell through to the plain-text path and silently lost
+ * every structured field. Anything that is not a single whole-reply fence is
+ * returned trimmed but otherwise unchanged.
+ */
+export function stripWholeReplyCodeFence(rawOutput: string): string {
+  const trimmed = rawOutput.trim();
+  const fenced = /^```[\w-]*\s*([\s\S]*?)\s*```$/.exec(trimmed);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
 export class ScreenUnderstandingService {
   private imageHashService: ImageHashService;
   private optimizer: ImageOptimizer;
@@ -437,13 +451,14 @@ export class ScreenUnderstandingService {
     confidence?: number;
   } {
     const trimmed = rawOutput.trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    const unfenced = stripWholeReplyCodeFence(trimmed);
+    if (unfenced.startsWith('{') && unfenced.endsWith('}')) {
       try {
-        const parsed = JSON.parse(trimmed);
+        const parsed = JSON.parse(unfenced);
         return {
           visibleSummary: typeof parsed.visibleSummary === 'string' ? parsed.visibleSummary : '',
           extractedText: typeof parsed.extractedText === 'string' ? parsed.extractedText : (typeof parsed.visibleSummary === 'string' ? parsed.visibleSummary : ''),
-          codeBlocks: Array.isArray(parsed.codeBlocks) ? parsed.codeBlocks.filter((c: any) => typeof c === 'string') : this.extractCodeBlocks(trimmed),
+          codeBlocks: Array.isArray(parsed.codeBlocks) ? parsed.codeBlocks.filter((c: any) => typeof c === 'string') : this.extractCodeBlocks(unfenced),
           tables: Array.isArray(parsed.tables) ? parsed.tables : [],
           errors: Array.isArray(parsed.errors) ? parsed.errors.filter((e: any) => typeof e === 'string') : [],
           screenType: typeof parsed.screenType === 'string' ? parsed.screenType : undefined,

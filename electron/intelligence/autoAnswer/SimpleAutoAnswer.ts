@@ -214,6 +214,14 @@ export interface SimpleAutoAnswerHost {
     speculativeSnapshot?(): { questionId: string | null; text: string | null };
     /** Start the answer WHILE the judge decides (see PREFETCH_MIN_ANSWERABILITY). */
     prefetchAnswer?(questionId: string, text: string): void;
+    /**
+     * The judge rejected this candidate, so its prefetch will never be
+     * adopted: release the engine's speculative slot now rather than at
+     * expiry, or the next candidate's prefetch is refused. Only definitive
+     * rejections call it; a superseded or incomplete verdict does not, since
+     * the grown question may still reuse the stream by similarity.
+     */
+    abandonSpeculative?(questionId: string): void;
     modeName?(): string | null;
     telemetry?(event: AutoAnswerTelemetryEvent): void;
     log?(line: string): void;
@@ -570,6 +578,8 @@ export class SimpleAutoAnswerEngine {
             if (/\?\s*$/.test(candidate) || (!this.punctuationGuaranteed && interrogative)) {
                 this.host.log?.(`[AutoAnswer:simple] judge ${outcome} — fallback dispatch`);
                 this.deliver(id, candidate, 0.9, 'general_question', committedAt);
+            } else {
+                this.releasePrefetch(id);
             }
             return;
         }
@@ -587,6 +597,7 @@ export class SimpleAutoAnswerEngine {
             const reason = route.route === 'wait_incomplete' ? 'incomplete' : route.reason;
             this.emit({ name: 'auto_answer_ignored', questionId: id, skipReason: reason, dialogueAct: verdict.act, answerability: verdict.answerability });
             if (route.route === 'wait_incomplete') this.lastJudgedKey = '';   // more speech may finish it → re-judge then
+            else this.releasePrefetch(id);
             return;
         }
         const text = route.questionText ?? candidate;
@@ -608,7 +619,14 @@ export class SimpleAutoAnswerEngine {
             this.deliver(id, text, route.answerability, route.act, committedAt);
         } else {
             this.emit({ name: 'auto_answer_ignored', questionId: id, skipReason: 'low_answerability', answerability: route.answerability });
+            this.releasePrefetch(id);
         }
+    }
+
+    private releasePrefetch(id: string): void {
+        try {
+            this.host.abandonSpeculative?.(id);
+        } catch { /* prefetch is an optimisation; never break the pipeline */ }
     }
 
     /** Dispatch now, or retry while the engine is busy — woken early by onEngineIdle. */

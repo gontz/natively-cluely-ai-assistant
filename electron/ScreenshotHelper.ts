@@ -108,6 +108,21 @@ function getDisplayContainingRect(rect: Electron.Rectangle): Electron.Display {
  */
 const MAX_THUMBNAIL_RATIO = 10;
 
+// Chromium's desktopCapturer caches its thumbnail per requested size. Both
+// capture paths below request a size that is stable between calls (the
+// display bounds rarely change), so back-to-back getSources() calls can return
+// the SAME cached frame instead of a fresh grab of the screen (observed as
+// byte-identical PNGs despite visible screen changes in between). Toggling the
+// requested width by 1px on every call makes each request look like a new size
+// to that cache. There is no visible effect on the output: Chromium fits the
+// thumbnail inside the requested box preserving aspect ratio, and all crop
+// math reads the ACTUAL returned size via image.getSize().
+let thumbnailWidthToggle = false;
+export function nextThumbnailWidth(baseWidth: number): number {
+  thumbnailWidthToggle = !thumbnailWidthToggle;
+  return baseWidth + (thumbnailWidthToggle ? 1 : 0);
+}
+
 /**
  * Maps an absolute-screen selection rectangle into crop coordinates in a
  * desktopCapturer thumbnail's pixel space.
@@ -214,9 +229,11 @@ async function getDisplaysIntersectingSelection(
   }
 
   try {
+    // See nextThumbnailWidth: maxWidth is stable between calls, so an
+    // unperturbed size can return a stale cached frame.
     sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: maxWidth, height: maxHeight }
+      thumbnailSize: { width: nextThumbnailWidth(maxWidth), height: maxHeight }
     });
   } catch (error) {
     console.error('[ScreenshotHelper] Failed to get desktop sources:', error);
@@ -521,7 +538,9 @@ export class ScreenshotHelper {
       // either case. (Assuming native pixels + multiplying by scaleFactor is exactly
       // the latent bug that turned right/bottom selections into full-screen captures.)
       const thumbnailSize = {
-        width: displayBounds.width,
+        // See nextThumbnailWidth: displayBounds is stable between calls, so an
+        // unperturbed width can return a stale cached frame.
+        width: nextThumbnailWidth(displayBounds.width),
         height: displayBounds.height
       };
 
