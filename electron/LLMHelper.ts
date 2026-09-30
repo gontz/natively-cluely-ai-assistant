@@ -820,6 +820,20 @@ export class LLMHelper {
   /** Longest prefix of the answer prompt a repair may inherit. */
   private static readonly REPLAYED_ANSWER_PROMPT_MAX_CHARS = 24000;
 
+  // Interview Knowledge citations (electron/services/interviewKnowledge/), keyed
+  // by the turn's abort signal for the same reason answerCallByTurn is: manual
+  // chat and a live WTA answer stream concurrently through this one instance,
+  // so a single "last citations" slot would hand one turn's sources to the
+  // other. A turn without a signal (chatWithGemini) records nothing.
+  private interviewKnowledgeCitationsByTurn: WeakMap<object, import('./services/interviewKnowledge/interviewKnowledgeContext').InterviewKnowledgeCitation[]> = new WeakMap();
+
+  /** Sources that backed the answer streamed under `key`, or null when none were retrieved. */
+  public getInterviewKnowledgeCitations(key: object | undefined | null): import('./services/interviewKnowledge/interviewKnowledgeContext').InterviewKnowledgeCitation[] | null {
+    if (!key || typeof key !== 'object') return null;
+    const citations = this.interviewKnowledgeCitationsByTurn.get(key);
+    return citations && citations.length ? citations : null;
+  }
+
   /** Called by the ANSWER paths only. Repairs must never overwrite the copy. */
   public rememberAnswerCall(key: object | undefined | null, args: Parameters<LLMHelper['streamChat']>): void {
     if (!key || typeof key !== 'object') return;
@@ -4105,6 +4119,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           }
         } catch (groundedErr: any) {
           console.warn('[LLMHelper] Document-grounded manual retrieval failed, proceeding without:', groundedErr.message);
+        }
+      }
+      // Free-tier Interview Knowledge — non-streaming counterpart of the block in
+      // _streamChatInner (no citations: this path has no per-turn key).
+      {
+        const ikModule = require('./services/interviewKnowledge/interviewKnowledgeContext') as typeof import('./services/interviewKnowledge/interviewKnowledgeContext');
+        if (ikModule.shouldInjectInterviewKnowledge({ v3Owned: routeOptions?.v3Owned === true, strictDocumentGrounded: _chatGroundingInfo?.strictDocumentGroundedActive === true })) {
+          const ik = await ikModule.buildInterviewKnowledgeInjection({ question: message, live: false });
+          context = ikModule.mergeInterviewKnowledgeContext(context, ik.contextBlock);
         }
       }
       // R6: knowledge suppression reads the STRICT flag (Defect C doctrine —
@@ -8245,6 +8268,19 @@ let isMultimodal = !!(imagePaths?.length);
         }
       } catch (groundedErr: any) {
         console.warn('[LLMHelper.stream] Document-grounded manual retrieval failed, proceeding without:', groundedErr.message);
+      }
+    }
+    // Free-tier Interview Knowledge (electron/services/interviewKnowledge/):
+    // additive retrieved context, gated in interviewKnowledgeContext.ts (never
+    // on V3-owned, Context OS governed or strict doc-grounded turns). Never throws.
+    {
+      const ikModule = require('./services/interviewKnowledge/interviewKnowledgeContext') as typeof import('./services/interviewKnowledge/interviewKnowledgeContext');
+      if (ikModule.shouldInjectInterviewKnowledge({ ignoreKnowledgeMode, v3Owned: v3OwnedTurn, contextOsGoverned: contextOsGovernedDocumentTurn, strictDocumentGrounded: strictDocGroundedForLog })) {
+        _stage('interview-knowledge START');
+        const ik = await ikModule.buildInterviewKnowledgeInjection({ question: message, live: true });
+        _stage(`interview-knowledge DONE (rounds=${ik.rounds}, chunks=${ik.citations.length})`);
+        context = ikModule.mergeInterviewKnowledgeContext(context, ik.contextBlock);
+        if (abortSignal && ik.citations.length) this.interviewKnowledgeCitationsByTurn.set(abortSignal, ik.citations);
       }
     }
     if (shouldRunKnowledge) {

@@ -6076,7 +6076,15 @@ export function initializeIpcHandlers(appState: AppState): void {
             // the streamed answer was already valid, finalText is undefined and the
             // already-streamed tokens stand. streamId (audit finding #3) lets the
             // renderer ignore a stale done from a superseded stream.
-            event.sender.send('gemini-stream-done', { ...(finalText ? { finalText } : {}), streamId: myStreamId });
+            // Interview Knowledge sources for THIS turn (keyed by its abort
+            // signal in LLMHelper, so a concurrent live answer's sources can
+            // never land on this row). Absent when none were retrieved.
+            const ikCitations = llmHelper.getInterviewKnowledgeCitations?.(myController?.signal);
+            event.sender.send('gemini-stream-done', {
+              ...(finalText ? { finalText } : {}),
+              ...(ikCitations ? { citations: ikCitations } : {}),
+              streamId: myStreamId,
+            });
             chatTrace.mark('response_completed', { chars: fullResponse.length, repaired: Boolean(finalText) });
             chatTrace.finish({ chars: fullResponse.length });
             iTrace.setProvider({ provider: 'llm', model: undefined })

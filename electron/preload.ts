@@ -775,7 +775,7 @@ interface ElectronAPI {
     options?: { skipSystemPrompt?: boolean; ignoreKnowledgeMode?: boolean },
   ) => Promise<void>;
   onGeminiStreamToken: (callback: (token: string, meta?: { streamId?: number }) => void) => () => void;
-  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number }) => void) => () => void;
+  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => void) => () => void;
   onGeminiStreamError: (callback: (error: string, meta?: { streamId?: number | null; source?: string }) => void) => () => void;
 
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void;
@@ -2363,8 +2363,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
   },
 
-  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number }) => void) => {
-    const subscription = (_: any, data?: { finalText?: string; streamId?: number }) => callback(data);
+  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => void) => {
+    const subscription = (_: any, data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => callback(data);
     ipcRenderer.on('gemini-stream-done', subscription);
     return () => {
       ipcRenderer.removeListener('gemini-stream-done', subscription);
