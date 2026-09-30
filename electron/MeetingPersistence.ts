@@ -11,6 +11,7 @@ import { MeetingContextAssembler } from './services/meeting/MeetingContextAssemb
 import { cleanMeetingTitle, isAnswerFragmentTitle, isAnswerShapedGeneration } from './services/meeting/MeetingSummaryV3';
 import { NOTE_CALL_TIMEOUT_MS } from './services/meeting/generateStructured';
 import type { MeetingSummaryTelemetryMeta } from './services/meeting/types';
+import { removeSessionScreenshots, type MeetingScreenshot } from './services/meeting/MeetingScreenshotStore';
 import { MeetingMemoryService, buildPersistedMeetingMemory } from './intelligence/MeetingMemoryService';
 import type { MeetingMemoryProvenanceTelemetry } from './intelligence/MeetingMemoryService';
 import { LongTermMemoryService } from './intelligence/memory/LongTermMemoryService';
@@ -261,6 +262,22 @@ export class MeetingPersistence {
     }
 
     /**
+     * A session that ends without a saved meeting must not leave its
+     * screenshot copies behind. Call before session.reset() (the key changes).
+     */
+    private discardSessionScreenshots(): void {
+        try {
+            if (this.session.getSessionScreenshots().length === 0) return;
+            removeSessionScreenshots(
+                DatabaseManager.getInstance().getMeetingScreenshotsRoot(),
+                this.session.getScreenshotSessionKey(),
+            );
+        } catch (e) {
+            console.warn('[MeetingPersistence] Failed to discard session screenshots:', e);
+        }
+    }
+
+    /**
      * Stops the meeting immediately, snapshots data, and triggers background processing.
      * Returns immediately so UI can switch.
      */
@@ -274,6 +291,7 @@ export class MeetingPersistence {
         const durationMs = Date.now() - this.session.getSessionStartTime();
         if (durationMs < 1000) {
             console.log("Meeting too short, ignoring.");
+            this.discardSessionScreenshots();
             this.session.reset();
             return null;
         }
@@ -303,6 +321,7 @@ export class MeetingPersistence {
                     properties: { persisted: false, reason: 'do_not_persist', durationMs },
                 });
             } catch { /* non-fatal */ }
+            this.discardSessionScreenshots();
             this.session.reset();
             return null;
         }
@@ -331,6 +350,7 @@ export class MeetingPersistence {
         const snapshot = {
             transcript: [...this.session.getFullTranscript()],
             usage: [...this.session.getFullUsage()],
+            screenshots: [...this.session.getSessionScreenshots()],
             startTime: this.session.getSessionStartTime(),
             durationMs: durationMs,
             context: this.session.getFullSessionContext(),
@@ -375,6 +395,7 @@ export class MeetingPersistence {
             detailedSummary: { actionItems: [], keyPoints: [] },
             transcript: snapshot.transcript,
             usage: snapshot.usage,
+            screenshots: snapshot.screenshots,
             isProcessed: false,
             summaryStatus: 'queued'
         };
@@ -402,7 +423,7 @@ export class MeetingPersistence {
      * Heavy lifting: LLM Title, Summary, and DB Write
      */
     private async processAndSaveMeeting(
-        data: { transcript: TranscriptSegment[], usage: any[] | undefined, startTime: number, durationMs: number, context: string, memoryEligibleCount?: number },
+        data: { transcript: TranscriptSegment[], usage: any[] | undefined, screenshots?: MeetingScreenshot[], startTime: number, durationMs: number, context: string, memoryEligibleCount?: number },
         meetingId: string,
         // BUG-04 fix: accept metadata snapshot so calendar info is not lost after session.reset()
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
@@ -456,6 +477,7 @@ export class MeetingPersistence {
                 detailedSummary: { actionItems: [], keyPoints: [] },
                 transcript: data.transcript,
                 usage: data.usage,
+                screenshots: data.screenshots,
                 isProcessed: true,
                 summaryStatus: 'completed',
             };
@@ -878,6 +900,7 @@ Return ONLY valid JSON (no markdown code blocks):
                 detailedSummary: summaryData,
                 transcript: data.transcript,
                 usage: data.usage,
+                screenshots: data.screenshots,
                 calendarEventId: calendarEventId,
                 source: source,
                 isProcessed: true,

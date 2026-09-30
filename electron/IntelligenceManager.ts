@@ -14,6 +14,7 @@ import type { TurnIdentity } from './llm/turnIdentity';
 import { IntelligenceEngine } from './IntelligenceEngine';
 import { MeetingPersistence } from './MeetingPersistence';
 import { ScreenContext } from './services/screen/ScreenContextService';
+import type { MeetingScreenshot } from './services/meeting/MeetingScreenshotStore';
 
 // Re-export types for backward compatibility
 export type { TranscriptSegment, SuggestionTrigger, ContextItem } from './SessionTracker';
@@ -192,6 +193,14 @@ export class IntelligenceManager extends EventEmitter {
      */
     pushUsage(entry: any): void {
         this.session.pushUsage(entry);
+    }
+
+    getScreenshotSessionKey(): string {
+        return this.session.getScreenshotSessionKey();
+    }
+
+    addSessionScreenshot(sessionKey: string, shot: MeetingScreenshot): boolean {
+        return this.session.addSessionScreenshot(sessionKey, shot);
     }
 
     // ============================================

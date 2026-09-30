@@ -732,6 +732,8 @@ export interface ElectronAPI {
   regenerateMeetingFollowUp: (id: string, tone?: 'professional' | 'warm' | 'concise' | 'friendly') => Promise<{ success: boolean; error?: string }>
   updateMeetingSpeakerLabels: (id: string, labels: Record<string, string>) => Promise<{ success: boolean; labels?: Record<string, string>; notesUpdated?: boolean; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
+  getMeetingScreenshotImage: (filePath: string, variant?: 'thumbnail' | 'full') => Promise<{ success: boolean; dataUrl?: string; error?: string }>
+  saveMeetingScreenshotAs: (filePath: string, timestamp?: number) => Promise<{ success: boolean; path?: string; error?: string }>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
   setMeetingInterfaceTheme: (theme: string) => void
   onMeetingInterfaceThemeChanged: (callback: (theme: string) => void) => () => void
