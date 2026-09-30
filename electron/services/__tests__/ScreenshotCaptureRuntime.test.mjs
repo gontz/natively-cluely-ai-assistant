@@ -67,6 +67,7 @@ const DISPLAY = { id: 1, scaleFactor: 2, bounds: BOUNDS };
 // Mutable capture-control state the fake desktopCapturer reads.
 let currentThumbnail;
 let getSourcesCalls;
+let getSourcesOpts; // options object passed to every getSources() call
 let writtenFiles; // { path, buffer } records for every fs.writeFile the SUT performs
 
 function makeFakeElectron() {
@@ -80,8 +81,9 @@ function makeFakeElectron() {
       getPrimaryDisplay: () => DISPLAY
     },
     desktopCapturer: {
-      getSources: async () => {
+      getSources: async (opts) => {
         getSourcesCalls++;
+        getSourcesOpts.push(opts);
         return [
           {
             id: 'screen:0:0',
@@ -124,6 +126,7 @@ after(() => {
 
 beforeEach(() => {
   getSourcesCalls = 0;
+  getSourcesOpts = [];
   writtenFiles = [];
 });
 
@@ -263,6 +266,62 @@ describe('captureWithDesktopCapturer runtime (single display, mocked Electron)',
       const dims = decodeWritten(writtenFiles[0].buffer);
       assert.deepEqual(dims, { w: BOUNDS.width, h: BOUNDS.height }, 'full capture writes the whole thumbnail');
       assert.equal(currentThumbnail.cropCalls.length, 0, 'no crop when no area is given');
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---- Stale-frame fix: Chromium caches desktopCapturer thumbnails per requested
+// size, so a fixed thumbnailSize can hand back the same frame on consecutive
+// captures. Every capture must request a size that differs from the previous one.
+// takeScreenshot/takeSelectiveScreenshot route through captureWithDesktopCapturer
+// on both darwin and win32 (the same branch), so this exercises the shared path.
+describe('desktopCapturer thumbnail cache busting', () => {
+  test('nextThumbnailWidth alternates base and base+1', async () => {
+    const { nextThumbnailWidth } = await import('file://' + COMPILED.replace(/\\/g, '/'));
+    const widths = [nextThumbnailWidth(1440), nextThumbnailWidth(1440), nextThumbnailWidth(1440)];
+    for (const w of widths) assert.ok(w === 1440 || w === 1441, `unexpected width ${w}`);
+    assert.notEqual(widths[0], widths[1]);
+    assert.notEqual(widths[1], widths[2]);
+  });
+
+  test('consecutive full captures request different thumbnail sizes; output is unchanged', async () => {
+    currentThumbnail = makeThumbnail(BOUNDS.width, BOUNDS.height);
+    const restore = interceptWrites();
+    try {
+      const helper = new ScreenshotHelper('queue');
+      await helper.takeScreenshot();
+      await helper.takeScreenshot();
+      assert.equal(getSourcesOpts.length, 2);
+      const [a, b] = getSourcesOpts.map((o) => o.thumbnailSize);
+      assert.notEqual(a.width, b.width, 'back-to-back requests must not share a cache key');
+      assert.equal(Math.abs(a.width - b.width), 1, 'wobble is 1px only');
+      assert.ok(Math.min(a.width, b.width) === BOUNDS.width);
+      assert.equal(a.height, BOUNDS.height);
+      assert.equal(b.height, BOUNDS.height);
+      for (const f of writtenFiles) {
+        assert.deepEqual(decodeWritten(f.buffer), { w: BOUNDS.width, h: BOUNDS.height });
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test('consecutive selective captures also vary the request and keep the crop exact', async () => {
+    currentThumbnail = makeThumbnail(BOUNDS.width, BOUNDS.height);
+    const restore = interceptWrites();
+    try {
+      const helper = new ScreenshotHelper('queue');
+      const area = { x: 100, y: 100, width: 200, height: 150 };
+      await helper.takeSelectiveScreenshot(area);
+      await helper.takeSelectiveScreenshot(area);
+      const [a, b] = getSourcesOpts.map((o) => o.thumbnailSize);
+      assert.notEqual(a.width, b.width);
+      assert.equal(writtenFiles.length, 2);
+      for (const f of writtenFiles) {
+        assert.deepEqual(decodeWritten(f.buffer), { w: 200, h: 150 }, 'crop derives from the returned size, not the requested one');
+      }
     } finally {
       restore();
     }
