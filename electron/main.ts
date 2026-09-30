@@ -20,6 +20,7 @@ import {
   chunkHasSystemAudioSignal,
   describeNoSystemAudioInTest,
 } from "./audio/audioTestSystemSilence.mjs"
+import { decideSelectedOutputSilenceFallback } from "./audio/selectedOutputSilenceFallback.mjs"
 import { FatalMainProcessCoordinator } from "./utils/fatalMainProcess"
 import { installResilientDnsLookup } from "./utils/resilientDnsLookup"
 import { resolveDebugLogPath } from "./utils/debugLogPath.mjs"
@@ -3974,10 +3975,20 @@ export class AppState {
     };
     (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
     capture.on('start', armStuckWatchdog);
+    capture.on('start', () => {
+      this._systemOutputSignalWatch = { capture, startedAtMs: Date.now(), hadSignal: false };
+    });
     capture.on('stop', disarmStuckWatchdog);
+    capture.on('stop', () => {
+      if (this._systemOutputSignalWatch?.capture === capture) this._systemOutputSignalWatch = null;
+    });
     capture.on('data', (chunk: Buffer) => {
       const now = Date.now();
       handleSystemAudioHealthDecision(systemAudioHealth.handle({ kind: 'chunk', nowMs: now, chunk }));
+      const signalWatch = this._systemOutputSignalWatch;
+      if (signalWatch && signalWatch.capture === capture && !signalWatch.hadSignal && chunkHasSystemAudioSignal(chunk)) {
+        signalWatch.hadSignal = true;
+      }
       chunkCount++;
       if (chunkCount === 1 && stuckTimer) {
         clearTimeout(stuckTimer);
@@ -5446,9 +5457,14 @@ export class AppState {
     this._defaultOutputWatcherInterval = setInterval(() => {
       if (this._isQuitting) return;
       if (!this.isMeetingActive) return;
-      // Only watch when we're on the default route. If the user explicitly
-      // picked an output device, respect that choice.
-      if (this._lastRequestedOutputDeviceId) return;
+      // Only follow route changes when we're on the default route. If the user
+      // explicitly picked an output device, respect that choice — unless, on
+      // Windows, that device has delivered no audio at all while the Windows
+      // default is a different endpoint (see maybeFallBackFromSilentSelectedOutput).
+      if (this._lastRequestedOutputDeviceId) {
+        this.maybeFallBackFromSilentSelectedOutput(NativeModule);
+        return;
+      }
       if (this._defaultOutputSwitchInProgress) return;
       if (!this.systemAudioCapture) return;
 
@@ -5710,6 +5726,107 @@ export class AppState {
           reason: 'output-route-rebuild-failed',
         });
       }
+    } finally {
+      this._defaultOutputSwitchInProgress = false;
+    }
+  }
+
+  // Signal bookkeeping for the live meeting's system capture: when it started
+  // and whether any chunk has carried real audio since. Keyed by instance so a
+  // rebuilt capture never inherits the previous one's history.
+  private _systemOutputSignalWatch: { capture: SystemAudioCapture; startedAtMs: number; hadSignal: boolean } | null = null;
+  // One silent-selected-output fallback per meeting at most.
+  private _selectedOutputFallbackGeneration = -1;
+
+  /**
+   * Windows: the user picked a specific output, but the meeting app plays
+   * through a different Windows default endpoint, so WASAPI loopback on the
+   * selected endpoint hears nothing. After a sustained stretch with no signal
+   * at all (decideSelectedOutputSilenceFallback), capture the default output
+   * instead, then let the default-output watcher follow it. No-op on macOS:
+   * the pure decision returns fallback:false for any platform but win32.
+   */
+  private maybeFallBackFromSilentSelectedOutput(NativeModule: any): void {
+    const capture = this.systemAudioCapture;
+    if (!capture) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+    if (this._selectedOutputFallbackGeneration === this._meetingGeneration) return;
+    const watch = this._systemOutputSignalWatch;
+    if (!watch || watch.capture !== capture) return; // not started yet, or rebuilt
+
+    let defaultOutputId = '';
+    try {
+      defaultOutputId = NativeModule.getDefaultOutputDeviceId() || '';
+    } catch {
+      return; // endpoint enumeration momentarily unavailable — retry next tick
+    }
+    const decision = decideSelectedOutputSilenceFallback({
+      platform: process.platform,
+      selectedOutputId: this._lastRequestedOutputDeviceId,
+      defaultOutputId,
+      silentForMs: Date.now() - watch.startedAtMs,
+      hadSignal: watch.hadSignal,
+    });
+    if (!decision.fallback) return;
+
+    this._selectedOutputFallbackGeneration = this._meetingGeneration;
+    this.fallBackToDefaultOutput(capture, decision.defaultOutputId).catch(err => {
+      console.error('[DefaultOutputWatcher] Falling back from the silent selected output failed:', err);
+    });
+  }
+
+  private async fallBackToDefaultOutput(expectedCapture: SystemAudioCapture, defaultOutputId: string): Promise<void> {
+    const meetingGeneration = this._meetingGeneration;
+    const isCurrentMeeting = () => this.isMeetingActive && this._meetingGeneration === meetingGeneration;
+    if (this._isQuitting || !isCurrentMeeting()) return;
+    if (this.systemAudioCapture !== expectedCapture) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+
+    const requested = this._lastRequestedOutputDeviceId ?? null;
+    console.warn(
+      `[DefaultOutputWatcher] Selected output ${requested} produced no system audio; Windows default output is ${defaultOutputId}. Capturing the default output instead.`,
+    );
+    // Shares the route-change mutex: both flows destroy + recreate
+    // this.systemAudioCapture, and the recovery handler checks this flag too.
+    this._defaultOutputSwitchInProgress = true;
+    try {
+      this.systemAudioCapture = null;
+      this._sysSttRateApplied = false;
+      this._systemAudioRecoveryAttempts = 0;
+      this._systemAudioConsecutiveFailures = 0;
+      await expectedCapture.destroy();
+      if (this._isQuitting || !isCurrentMeeting()) return;
+      // Same ownership revalidation as handleDefaultOutputChanged: another
+      // flow may have assigned a capture while we awaited the teardown.
+      if (this.systemAudioCapture) {
+        console.warn('[DefaultOutputWatcher] Capture rebuilt by another flow mid-fallback — keeping theirs.');
+        return;
+      }
+
+      const fresh = new SystemAudioCapture(undefined);
+      this.systemAudioCapture = fresh;
+      // From here on this meeting is on the default route, so the watcher's
+      // normal route-change following applies.
+      this._lastRequestedOutputDeviceId = undefined;
+      this._lastObservedDefaultOutputId = defaultOutputId;
+      this.wireSystemCapture(fresh, '(SilentSelectedOutputFallback)');
+      fresh.start();
+      this.broadcastDeviceSelection({
+        kind: 'output',
+        requested,
+        actual: 'default',
+        fellBack: true,
+        reason: 'selected-output-silent',
+      });
+    } catch (err) {
+      console.error('[DefaultOutputWatcher] Could not start capture on the Windows default output:', err);
+      this.broadcastDeviceSelection({
+        kind: 'output',
+        requested,
+        actual: null,
+        fellBack: true,
+        reason: 'selected-output-fallback-failed',
+      });
     } finally {
       this._defaultOutputSwitchInProgress = false;
     }
