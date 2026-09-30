@@ -15,6 +15,12 @@ import path from "path"
 import fs from "fs"
 import os from "os"
 import { SystemAudioHealthClassifier } from "./audio/systemAudioHealthClassifier.mjs"
+import {
+  AUDIO_TEST_NO_SYSTEM_AUDIO_MS,
+  chunkHasSystemAudioSignal,
+  describeNoSystemAudioInTest,
+} from "./audio/audioTestSystemSilence.mjs"
+import { decideSelectedOutputSilenceFallback } from "./audio/selectedOutputSilenceFallback.mjs"
 import { FatalMainProcessCoordinator } from "./utils/fatalMainProcess"
 import { installResilientDnsLookup } from "./utils/resilientDnsLookup"
 import { resolveDebugLogPath } from "./utils/debugLogPath.mjs"
@@ -3969,10 +3975,20 @@ export class AppState {
     };
     (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
     capture.on('start', armStuckWatchdog);
+    capture.on('start', () => {
+      this._systemOutputSignalWatch = { capture, startedAtMs: Date.now(), hadSignal: false };
+    });
     capture.on('stop', disarmStuckWatchdog);
+    capture.on('stop', () => {
+      if (this._systemOutputSignalWatch?.capture === capture) this._systemOutputSignalWatch = null;
+    });
     capture.on('data', (chunk: Buffer) => {
       const now = Date.now();
       handleSystemAudioHealthDecision(systemAudioHealth.handle({ kind: 'chunk', nowMs: now, chunk }));
+      const signalWatch = this._systemOutputSignalWatch;
+      if (signalWatch && signalWatch.capture === capture && !signalWatch.hadSignal && chunkHasSystemAudioSignal(chunk)) {
+        signalWatch.hadSignal = true;
+      }
       chunkCount++;
       if (chunkCount === 1 && stuckTimer) {
         clearTimeout(stuckTimer);
@@ -5441,9 +5457,14 @@ export class AppState {
     this._defaultOutputWatcherInterval = setInterval(() => {
       if (this._isQuitting) return;
       if (!this.isMeetingActive) return;
-      // Only watch when we're on the default route. If the user explicitly
-      // picked an output device, respect that choice.
-      if (this._lastRequestedOutputDeviceId) return;
+      // Only follow route changes when we're on the default route. If the user
+      // explicitly picked an output device, respect that choice — unless, on
+      // Windows, that device has delivered no audio at all while the Windows
+      // default is a different endpoint (see maybeFallBackFromSilentSelectedOutput).
+      if (this._lastRequestedOutputDeviceId) {
+        this.maybeFallBackFromSilentSelectedOutput(NativeModule);
+        return;
+      }
       if (this._defaultOutputSwitchInProgress) return;
       if (!this.systemAudioCapture) return;
 
@@ -5710,6 +5731,107 @@ export class AppState {
     }
   }
 
+  // Signal bookkeeping for the live meeting's system capture: when it started
+  // and whether any chunk has carried real audio since. Keyed by instance so a
+  // rebuilt capture never inherits the previous one's history.
+  private _systemOutputSignalWatch: { capture: SystemAudioCapture; startedAtMs: number; hadSignal: boolean } | null = null;
+  // One silent-selected-output fallback per meeting at most.
+  private _selectedOutputFallbackGeneration = -1;
+
+  /**
+   * Windows: the user picked a specific output, but the meeting app plays
+   * through a different Windows default endpoint, so WASAPI loopback on the
+   * selected endpoint hears nothing. After a sustained stretch with no signal
+   * at all (decideSelectedOutputSilenceFallback), capture the default output
+   * instead, then let the default-output watcher follow it. No-op on macOS:
+   * the pure decision returns fallback:false for any platform but win32.
+   */
+  private maybeFallBackFromSilentSelectedOutput(NativeModule: any): void {
+    const capture = this.systemAudioCapture;
+    if (!capture) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+    if (this._selectedOutputFallbackGeneration === this._meetingGeneration) return;
+    const watch = this._systemOutputSignalWatch;
+    if (!watch || watch.capture !== capture) return; // not started yet, or rebuilt
+
+    let defaultOutputId = '';
+    try {
+      defaultOutputId = NativeModule.getDefaultOutputDeviceId() || '';
+    } catch {
+      return; // endpoint enumeration momentarily unavailable — retry next tick
+    }
+    const decision = decideSelectedOutputSilenceFallback({
+      platform: process.platform,
+      selectedOutputId: this._lastRequestedOutputDeviceId,
+      defaultOutputId,
+      silentForMs: Date.now() - watch.startedAtMs,
+      hadSignal: watch.hadSignal,
+    });
+    if (!decision.fallback) return;
+
+    this._selectedOutputFallbackGeneration = this._meetingGeneration;
+    this.fallBackToDefaultOutput(capture, decision.defaultOutputId).catch(err => {
+      console.error('[DefaultOutputWatcher] Falling back from the silent selected output failed:', err);
+    });
+  }
+
+  private async fallBackToDefaultOutput(expectedCapture: SystemAudioCapture, defaultOutputId: string): Promise<void> {
+    const meetingGeneration = this._meetingGeneration;
+    const isCurrentMeeting = () => this.isMeetingActive && this._meetingGeneration === meetingGeneration;
+    if (this._isQuitting || !isCurrentMeeting()) return;
+    if (this.systemAudioCapture !== expectedCapture) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+
+    const requested = this._lastRequestedOutputDeviceId ?? null;
+    console.warn(
+      `[DefaultOutputWatcher] Selected output ${requested} produced no system audio; Windows default output is ${defaultOutputId}. Capturing the default output instead.`,
+    );
+    // Shares the route-change mutex: both flows destroy + recreate
+    // this.systemAudioCapture, and the recovery handler checks this flag too.
+    this._defaultOutputSwitchInProgress = true;
+    try {
+      this.systemAudioCapture = null;
+      this._sysSttRateApplied = false;
+      this._systemAudioRecoveryAttempts = 0;
+      this._systemAudioConsecutiveFailures = 0;
+      await expectedCapture.destroy();
+      if (this._isQuitting || !isCurrentMeeting()) return;
+      // Same ownership revalidation as handleDefaultOutputChanged: another
+      // flow may have assigned a capture while we awaited the teardown.
+      if (this.systemAudioCapture) {
+        console.warn('[DefaultOutputWatcher] Capture rebuilt by another flow mid-fallback — keeping theirs.');
+        return;
+      }
+
+      const fresh = new SystemAudioCapture(undefined);
+      this.systemAudioCapture = fresh;
+      // From here on this meeting is on the default route, so the watcher's
+      // normal route-change following applies.
+      this._lastRequestedOutputDeviceId = undefined;
+      this._lastObservedDefaultOutputId = defaultOutputId;
+      this.wireSystemCapture(fresh, '(SilentSelectedOutputFallback)');
+      fresh.start();
+      this.broadcastDeviceSelection({
+        kind: 'output',
+        requested,
+        actual: 'default',
+        fellBack: true,
+        reason: 'selected-output-silent',
+      });
+    } catch (err) {
+      console.error('[DefaultOutputWatcher] Could not start capture on the Windows default output:', err);
+      this.broadcastDeviceSelection({
+        kind: 'output',
+        requested,
+        actual: null,
+        fellBack: true,
+        reason: 'selected-output-fallback-failed',
+      });
+    } finally {
+      this._defaultOutputSwitchInProgress = false;
+    }
+  }
+
   // Mic-side equivalent of setupAudioRecoveryHandler. Pre-fix the cpal err_fn
   // (USB unplug, device-format change, exclusive-mode steal) only logged to
   // stderr — JS never learned the mic stream had stopped producing samples
@@ -5911,7 +6033,7 @@ export class AppState {
   }
 
 
-  public async startAudioTest(deviceId?: string): Promise<void> {
+  public async startAudioTest(deviceId?: string, outputDeviceId?: string): Promise<void> {
     // P2-12: guard against two concurrent calls both passing the async permission check
     // before either has created a capture — the second call would orphan the first capture.
     if (this._audioTestStarting) return;
@@ -5928,7 +6050,7 @@ export class AppState {
     }
     this._audioTestStarting = true;
     try {
-      await this._startAudioTestImpl(deviceId);
+      await this._startAudioTestImpl(deviceId, outputDeviceId);
     } finally {
       this._audioTestStarting = false;
     }
@@ -5958,9 +6080,29 @@ export class AppState {
   // nothing to tear down. The mic-level probe stays eager; only the system probe
   // (which owns the CoreAudio tap) is debounced.
   private _audioTestSystemProbeTimer: NodeJS.Timeout | null = null;
+  // Armed when the system probe starts; fires a "no system audio detected"
+  // diagnosis if no signal-bearing chunk arrives within
+  // AUDIO_TEST_NO_SYSTEM_AUDIO_MS. Cleared on first signal, on a probe error,
+  // and in stopAudioTest so a stale test never reports into the next one.
+  private _audioTestNoSystemAudioTimer: NodeJS.Timeout | null = null;
 
-  private async _startAudioTestImpl(deviceId?: string): Promise<void> {
-    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}`);
+  private clearAudioTestNoSystemAudioTimer(): void {
+    if (this._audioTestNoSystemAudioTimer) {
+      clearTimeout(this._audioTestNoSystemAudioTimer);
+      this._audioTestNoSystemAudioTimer = null;
+    }
+  }
+
+  private async _startAudioTestImpl(deviceId?: string, outputDeviceId?: string): Promise<void> {
+    // The system-audio probe must listen on the same output the meeting will
+    // capture, or a user whose meeting app plays through a non-default device
+    // sees a flat meter here while the meeting works (or the reverse). The
+    // meeting passes the saved output id straight to SystemAudioCapture on both
+    // platforms (a CoreAudio UID on macOS, a WASAPI endpoint id on Windows; both
+    // native backends fall back to the default output when the id is stale), so
+    // the probe does the same. No id keeps the old default-output behaviour.
+    const probeOutputId = this.normalizeDeviceId(outputDeviceId);
+    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}, output: ${probeOutputId || 'default'}`);
     this.stopAudioTest(); // Stop any existing test (also bumps _audioTestEpoch)
     // UX4 hardening: snapshot epoch BEFORE the system-audio probe's awaited
     // permission probe. If stopAudioTest fires while we're awaiting, the
@@ -6017,8 +6159,39 @@ export class AppState {
     // missing screen-recording grant doesn't block the mic level meter.
     // Listeners include a TCC zero-fill detector (peak-to-peak < 100 for
     // the entire probe = TCC silently denied even though SCK started).
+    const armNoSystemAudioDiagnosis = (capture: SystemAudioCapture) => {
+      this.clearAudioTestNoSystemAudioTimer();
+      this._audioTestNoSystemAudioTimer = setTimeout(() => {
+        this._audioTestNoSystemAudioTimer = null;
+        if (!isCurrentTest() || this.audioTestSystemCapture !== capture) return;
+        // Windows copy can point at a mismatch between the selected endpoint
+        // and the Windows default; the default id is only meaningful there.
+        let defaultOutputId: string | undefined;
+        if (process.platform === 'win32' && probeOutputId) {
+          try {
+            const NativeModule: any = loadNativeModule();
+            if (NativeModule && typeof NativeModule.getDefaultOutputDeviceId === 'function') {
+              defaultOutputId = NativeModule.getDefaultOutputDeviceId() || undefined;
+            }
+          } catch { /* keep the message that does not mention the default */ }
+        }
+        const message = describeNoSystemAudioInTest({
+          platform: process.platform,
+          probeOutputId,
+          defaultOutputId,
+        });
+        console.warn(`[Main] AudioTest: no system audio signal in ${Math.round(AUDIO_TEST_NO_SYSTEM_AUDIO_MS / 1000)}s (output: ${probeOutputId || 'default'}).`);
+        for (const target of broadcastTargets()) {
+          this.sendToWindow(target, 'audio-test-system-error', message);
+        }
+      }, AUDIO_TEST_NO_SYSTEM_AUDIO_MS);
+    };
+
     const attachSystemTestListeners = (capture: SystemAudioCapture) => {
       capture.on('data', (chunk: Buffer) => {
+        if (this._audioTestNoSystemAudioTimer && this.audioTestSystemCapture === capture && chunkHasSystemAudioSignal(chunk)) {
+          this.clearAudioTestNoSystemAudioTimer();
+        }
         const targets = broadcastTargets();
         if (targets.length === 0) return;
         const level = computeRmsLevel(chunk);
@@ -6027,6 +6200,9 @@ export class AppState {
         }
       });
       capture.on('error', (err: Error) => {
+        // A hard error already explains the flat meter; don't follow it with
+        // a second, vaguer "no audio" message.
+        if (this.audioTestSystemCapture === capture) this.clearAudioTestNoSystemAudioTimer();
         console.error('[Main] AudioTest System Error:', err);
         for (const target of broadcastTargets()) {
           this.sendToWindow(target, 'audio-test-system-error', err.message || String(err));
@@ -6099,7 +6275,7 @@ export class AppState {
             return;
           }
           try {
-            this.audioTestSystemCapture = new SystemAudioCapture();
+            this.audioTestSystemCapture = new SystemAudioCapture(probeOutputId);
             attachSystemTestListeners(this.audioTestSystemCapture);
             // INVARIANT: SystemAudioCapture.start() MUST remain synchronous (its
             // native CoreAudio init runs on a background thread and start()
@@ -6114,6 +6290,8 @@ export class AppState {
             if (!isCurrentTest()) {
               try { this.audioTestSystemCapture?.stop(); } catch { /* ignore */ }
               this.audioTestSystemCapture = null;
+            } else {
+              armNoSystemAudioDiagnosis(this.audioTestSystemCapture);
             }
           } catch (probeErr: any) {
             console.warn('[Main] Deferred system-audio probe failed to start:', probeErr);
@@ -6153,6 +6331,7 @@ export class AppState {
       clearTimeout(this._audioTestSystemProbeTimer);
       this._audioTestSystemProbeTimer = null;
     }
+    this.clearAudioTestNoSystemAudioTimer();
     // Also disable pre-warm so stop() doesn't pre-warm a new monitor that would
     // keep the DSP thread alive after the settings panel is closed. Mirrors
     // the endMeeting() pattern where disablePreWarm() is called before stop().
