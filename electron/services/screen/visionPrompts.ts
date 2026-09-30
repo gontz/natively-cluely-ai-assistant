@@ -58,6 +58,7 @@ Return JSON only, matching this schema. Do not include any prose before or after
   "tables": [{ "rows": [["cell"]], "markdown": "<optional markdown table>" }],
   "errors": ["<error line>"],
   "taskDetected": "<short label for what task the screen is supporting>",
+  "hasUnansweredQuestion": <true or false. Decide from the LAYOUT, not just the words. A list, index or search-results page (many short rows or cards stacked vertically, each its own title or link, e.g. a problem list or search results) is browsing: false, however question-like the titles are. One continuous block of prose in the main content area that poses a question or problem (a problem statement, a written question, an error to fix) is true, even if a scrollbar shows more of that same block below. Also false for ordinary UI, documents, chat, code with no posed question, or a question whose answer or solution is already visible beside it.>,
   "confidence": 0.0
 }`;
 
