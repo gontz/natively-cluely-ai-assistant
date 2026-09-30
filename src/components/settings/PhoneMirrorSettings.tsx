@@ -249,6 +249,7 @@ const EMPTY_INFO: PhoneMirrorInfo = {
   running: false,
   enabled: false,
   exposeOnLan: false,
+  answersOnly: false,
   port: 0,
   loopbackUrl: null,
   primaryUrl: null,
@@ -579,7 +580,7 @@ export const PhoneMirrorSettings: React.FC = () => {
   const t = useT();
   const isLight = useResolvedTheme() === 'light';
   const [info, setInfo] = useState<PhoneMirrorInfo>(EMPTY_INFO);
-  const [busy, setBusy] = useState<null | 'enable' | 'disable' | 'lan' | 'rotate'>(null);
+  const [busy, setBusy] = useState<null | 'enable' | 'disable' | 'lan' | 'rotate' | 'answersOnly'>(null);
   // Phone Mirror server errors (status load, enable/disable, LAN, reset).
   const [error, setError] = useState<string | null>(null);
   // Smart Browser Context save errors — shown under their own section.
@@ -712,7 +713,7 @@ export const PhoneMirrorSettings: React.FC = () => {
   );
 
   const apply = useCallback(
-    async (key: 'enable' | 'disable' | 'lan' | 'rotate', fn: () => Promise<any>): Promise<PhoneMirrorInfo | null> => {
+    async (key: 'enable' | 'disable' | 'lan' | 'rotate' | 'answersOnly', fn: () => Promise<any>): Promise<PhoneMirrorInfo | null> => {
       setBusy(key);
       setError(null);
       try {
@@ -752,6 +753,12 @@ export const PhoneMirrorSettings: React.FC = () => {
       setPendingRunning(null);
     }
   }, [apply, info.running, info.exposeOnLan]);
+
+  // No restart and no confirmation: the service only stops publishing the
+  // user's questions, so the reply snapshot is all the switch needs.
+  const onToggleAnswersOnly = useCallback(async () => {
+    await apply('answersOnly', () => window.electronAPI.phoneMirrorSetAnswersOnly(!info.answersOnly));
+  }, [apply, info.answersOnly]);
 
   const onToggleLan = useCallback(async () => {
     if (inFlightRef.current) return;
@@ -1044,6 +1051,26 @@ export const PhoneMirrorSettings: React.FC = () => {
                   void onToggleLan();
                 }}
                 label={t('Allow LAN access')}
+              />
+            }
+          />
+
+          <SyncRow
+            icon={<EyeOff size={20} />}
+            title={t('Only mirror answers')}
+            descriptionKey={info.answersOnly ? 'answers-only-on' : 'answers-only-off'}
+            description={
+              info.answersOnly
+                ? t('The phone shows answers only, never your questions.')
+                : t('The phone shows your questions and the answers.')
+            }
+            control={
+              <Switch
+                checked={!!info.answersOnly}
+                onChange={() => {
+                  void onToggleAnswersOnly();
+                }}
+                label={t('Only mirror answers')}
               />
             }
           />

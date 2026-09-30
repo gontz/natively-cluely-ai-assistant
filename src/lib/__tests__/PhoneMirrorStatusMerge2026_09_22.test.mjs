@@ -148,6 +148,12 @@ describe('mergePhoneMirrorStatus — full snapshots keep the previous contract',
     assert.equal(mergePhoneMirrorStatus(prev, incoming), incoming);
   });
 
+  test('a full snapshot flipping answersOnly replaces the state', () => {
+    const prev = full({ answersOnly: false });
+    const incoming = full({ answersOnly: true });
+    assert.equal(mergePhoneMirrorStatus(prev, incoming), incoming);
+  });
+
   test('a non-object broadcast keeps prev', () => {
     const prev = full();
     assert.equal(mergePhoneMirrorStatus(prev, null), prev);

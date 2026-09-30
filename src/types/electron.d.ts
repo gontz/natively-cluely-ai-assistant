@@ -1098,6 +1098,7 @@ export interface ElectronAPI {
   phoneMirrorEnable: (exposeOnLan: boolean) => Promise<PhoneMirrorInfo | { error: string }>;
   phoneMirrorDisable: () => Promise<{ success: true }>;
   phoneMirrorSetLan: (exposeOnLan: boolean) => Promise<PhoneMirrorInfo | { error: string }>;
+  phoneMirrorSetAnswersOnly: (answersOnly: boolean) => Promise<PhoneMirrorInfo | { error: string }>;
   phoneMirrorRotateToken: () => Promise<PhoneMirrorInfo | { error: string }>;
   // Arm the 60s one-click pairing window for the companion browser extension.
   phoneMirrorArmExtension: () => Promise<{ armedMs: number } | { error: string }>;
@@ -1346,6 +1347,8 @@ export interface PhoneMirrorInfo {
   running: boolean;
   enabled: boolean;
   exposeOnLan: boolean;
+  /** When true, only AI answers reach the phone; the user's own questions are never mirrored. */
+  answersOnly: boolean;
   port: number;
   loopbackUrl: string | null;
   primaryUrl: string | null;

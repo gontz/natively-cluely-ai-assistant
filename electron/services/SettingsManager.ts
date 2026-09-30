@@ -95,6 +95,9 @@ export interface AppSettings {
     knowledgeMode?: boolean;
     phoneMirrorEnabled?: boolean;
     phoneMirrorExposeOnLan?: boolean;
+    // When true, PhoneMirrorService drops publishUserMessage() entirely: the
+    // phone shows only AI answers, never the questions that produced them.
+    phoneMirrorAnswersOnly?: boolean;
     // External optional provider. Default false: do not spawn Ollama unless
     // the user selects an Ollama model or explicitly opts into auto-start.
     autoStartOllama?: boolean;

@@ -17754,6 +17754,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle('phone-mirror:set-answers-only', async (_, answersOnly: boolean) => {
+    try {
+      return await PhoneMirrorService.getInstance().setAnswersOnly(!!answersOnly);
+    } catch (e: any) {
+      console.error('[IPC] phone-mirror:set-answers-only error:', e);
+      return { error: e?.message || 'failed to update answers-only setting' };
+    }
+  });
+
   safeHandle('phone-mirror:rotate-token', async () => {
     try {
       return await PhoneMirrorService.getInstance().rotateToken();
