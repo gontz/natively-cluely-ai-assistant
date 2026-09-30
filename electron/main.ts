@@ -1326,6 +1326,7 @@ import { disguiseIconRelativePath, shouldSetMacDockIcon } from './utils/disguise
 import { appUserModelIdForDisguise } from './utils/windowsTaskbarPolicy'
 import { shouldOpenExternally } from './utils/windowOpenPolicy'
 import { ensureNativeModuleAbi } from './utils/nativeModuleGuard'
+import { copyScreenshotIntoSession, removeStoredScreenshots } from './services/meeting/MeetingScreenshotStore'
 
 // Opt-in only: this trace writes allowlisted process metadata and IPC byte estimates
 // for a copied-profile native OOM investigation. It is inert unless explicitly enabled.
@@ -7519,9 +7520,34 @@ export class AppState {
 
   // Screenshot management methods
   public async takeScreenshot(restoreFocus: boolean = true): Promise<string> {
-    return this.withScreenshotCaptureSession('full', restoreFocus, (session) =>
+    const screenshotPath = await this.withScreenshotCaptureSession('full', restoreFocus, (session) =>
       this.screenshotHelper.takeScreenshot(this.getTargetDisplayForFullScreenshot(session))
     )
+    await this.recordMeetingScreenshot(screenshotPath, 'full')
+    return screenshotPath
+  }
+
+  /**
+   * Keep a copy of a capture taken during an active meeting so the saved
+   * meeting can show it. The queue file itself is short-lived (rolling queue
+   * of 5, cleared on reset-queues and quit), hence the copy. Never throws:
+   * the screenshot itself already succeeded.
+   */
+  private async recordMeetingScreenshot(sourcePath: string, captureKind: 'full' | 'selective'): Promise<void> {
+    if (!this.isMeetingActive || !sourcePath) return
+    const im = this.intelligenceManager
+    if (!im) return
+    try {
+      const sessionKey = im.getScreenshotSessionKey()
+      const root = DatabaseManager.getInstance().getMeetingScreenshotsRoot()
+      const copyPath = await copyScreenshotIntoSession(root, sessionKey, sourcePath)
+      // The meeting may have stopped while the copy ran; a stale key is refused.
+      if (!im.addSessionScreenshot(sessionKey, { path: copyPath, timestamp: Date.now(), captureKind })) {
+        removeStoredScreenshots(root, [copyPath])
+      }
+    } catch (error) {
+      console.warn('[Main] Failed to record meeting screenshot:', error)
+    }
   }
 
   /**
@@ -7548,7 +7574,7 @@ export class AppState {
   }
 
   public async takeSelectiveScreenshot(restoreFocus: boolean = true): Promise<string> {
-    return this.withScreenshotCaptureSession('selective', restoreFocus, async () => {
+    const screenshotPath = await this.withScreenshotCaptureSession('selective', restoreFocus, async () => {
       let captureArea: Electron.Rectangle | undefined;
 
       if (process.platform === 'win32' || process.platform === 'darwin') {
@@ -7564,6 +7590,8 @@ export class AppState {
 
       return this.screenshotHelper.takeSelectiveScreenshot(captureArea)
     })
+    await this.recordMeetingScreenshot(screenshotPath, 'selective')
+    return screenshotPath
   }
 
   public async getImagePreview(filepath: string): Promise<string> {

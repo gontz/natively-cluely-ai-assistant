@@ -6,6 +6,8 @@ import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { buildLegacySpaceCaseSql } from '../rag/embeddingSpace';
+import { ensureMeetingScreenshotsTable, getMeetingScreenshotPaths, getMeetingScreenshots, isRecordedMeetingScreenshot, replaceMeetingScreenshots } from './meetingScreenshotsRepo';
+import { meetingScreenshotsRoot, removeAllStoredScreenshots, removeStoredScreenshots, type MeetingScreenshot } from '../services/meeting/MeetingScreenshotStore';
 import type { ActionItem, DecisionItem, FollowUpDraft, MeetingSummaryGenerationMeta, MeetingSummaryModeMeta, MeetingSummarySectionV3, NoteBlock, PersonMention, QuestionItem, RiskItem, SourceQualityMeta, SpeakerLabelMap, SummaryStatus, TimelineItem } from '../services/meeting/types';
 
 // Interfaces for our data objects
@@ -57,6 +59,10 @@ export interface Meeting {
         answer?: string;
         items?: string[];
     }>;
+    // Screenshots taken during the session (copies under
+    // <userData>/meeting-screenshots). Undefined on save = keep the stored
+    // rows (recovery re-saves carry no screenshot list).
+    screenshots?: MeetingScreenshot[];
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
     isProcessed?: boolean;
@@ -74,6 +80,7 @@ export class DatabaseManager {
     private static instance: DatabaseManager;
     private db: Database.Database | null = null;
     private dbPath: string;
+    private userDataPath: string;
     private resolvedExtPath: string = '';
     private initError: Error | null = null;
 
@@ -102,6 +109,7 @@ export class DatabaseManager {
             userDataPath = path.join(os.tmpdir(), 'natively-no-electron-app');
         }
         try { fs.mkdirSync(userDataPath, { recursive: true }); } catch { /* best effort */ }
+        this.userDataPath = userDataPath;
         this.dbPath = path.join(userDataPath, 'natively.db');
         // IMPORTANT: never throw out of the constructor. If init() throws and
         // escapes, `DatabaseManager.instance` is never assigned — so every
@@ -1508,6 +1516,9 @@ export class DatabaseManager {
         // construction (the try/catch absorbs "duplicate column"), so it must
         // not depend on a version counter that concurrent branches can race.
         try { this.db.exec("ALTER TABLE meetings ADD COLUMN user_titled INTEGER DEFAULT 0"); } catch (e) { /* Column already exists */ }
+        // meeting_screenshots: a new table, created IF NOT EXISTS on every boot
+        // for the same reason as user_titled above (no version gate to race).
+        try { ensureMeetingScreenshotsTable(this.db); } catch (e) { console.error('[DatabaseManager] Failed to ensure meeting_screenshots table:', e); }
         if (version < 28) {
             this.db.pragma('user_version = 28');
         }
@@ -2995,6 +3006,13 @@ export class DatabaseManager {
             // 1. Insert Meeting (a user-renamed row keeps its title — RC-7)
             const existing = readUserTitle.get(meeting.id) as { title: string; user_titled: number } | undefined;
             const userTitled = existing?.user_titled === 1;
+            // INSERT OR REPLACE deletes the old meetings row, and with
+            // foreign_keys ON that cascades meeting_screenshots. A save that
+            // carries no screenshot list (recovery) must keep what is stored,
+            // so read it before the replace and write it back below.
+            const screenshotsToKeep = Array.isArray(meeting.screenshots)
+                ? meeting.screenshots
+                : (existing ? this.readMeetingScreenshots(meeting.id) : []);
             insertMeeting.run(
                 meeting.id,
                 userTitled && existing?.title ? existing.title : meeting.title,
@@ -3052,6 +3070,16 @@ export class DatabaseManager {
                         answerText,
                         metadata
                     );
+                }
+            }
+
+            // 4. Screenshots (the caller's list, or the rows kept above). A
+            // failure here must never cost the meeting itself, so it is contained.
+            if (screenshotsToKeep.length > 0 || Array.isArray(meeting.screenshots)) {
+                try {
+                    replaceMeetingScreenshots(this.db!, meeting.id, screenshotsToKeep);
+                } catch (e) {
+                    console.error(`[DatabaseManager] Failed to save screenshots for meeting ${meeting.id}:`, e);
                 }
             }
         });
@@ -3404,8 +3432,44 @@ export class DatabaseManager {
             source: meetingRow.source,
             summaryStatus: meetingRow.summary_status as SummaryStatus | undefined,
             transcript: transcript,
-            usage: usage
+            usage: usage,
+            screenshots: this.readMeetingScreenshots(id)
         };
+    }
+
+    private readMeetingScreenshots(id: string): MeetingScreenshot[] {
+        if (!this.db) return [];
+        try {
+            return getMeetingScreenshots(this.db, id);
+        } catch (e) {
+            // A DB that could not create the table must still open meetings.
+            console.warn('[DatabaseManager] Failed to read meeting screenshots:', e);
+            return [];
+        }
+    }
+
+    /** Root folder holding per-meeting screenshot copies. */
+    public getMeetingScreenshotsRoot(): string {
+        return meetingScreenshotsRoot(this.userDataPath);
+    }
+
+    /** True when a saved meeting references this file (renderer read/export guard). */
+    public isRecordedMeetingScreenshot(filePath: string): boolean {
+        if (!this.db) return false;
+        try {
+            return isRecordedMeetingScreenshot(this.db, filePath);
+        } catch {
+            return false;
+        }
+    }
+
+    private readScreenshotPathsSafe(meetingId?: string): string[] {
+        if (!this.db) return [];
+        try {
+            return getMeetingScreenshotPaths(this.db, meetingId);
+        } catch {
+            return [];
+        }
     }
 
     public deleteMeeting(id: string): boolean {
@@ -3428,10 +3492,16 @@ export class DatabaseManager {
             // no transaction a failure of the parent DELETE left the vectors gone and
             // the meeting present. This was inert only while R-01 meant nothing was
             // ever deleted; fixing R-01 makes it reachable.
+            // Screenshot rows go with the meeting (ON DELETE CASCADE); read the
+            // file paths first so the copies on disk can be removed after commit.
+            const screenshotPaths = this.readScreenshotPathsSafe(id);
             const info = this.db.transaction((meetingId: string) => {
                 this.deleteVectorsForMeeting(meetingId);
                 return this.db!.prepare('DELETE FROM meetings WHERE id = ?').run(meetingId);
             })(id);
+            if (info.changes > 0 && screenshotPaths.length > 0) {
+                removeStoredScreenshots(this.getMeetingScreenshotsRoot(), screenshotPaths);
+            }
             console.log(`[DatabaseManager] Deleted meeting ${id}. Changes: ${info.changes}`);
             return info.changes > 0;
         } catch (error) {
@@ -3556,8 +3626,10 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM chunks');
                 this.db!.exec('DELETE FROM ai_interactions');
                 this.db!.exec('DELETE FROM transcripts');
+                try { this.db!.exec('DELETE FROM meeting_screenshots'); } catch (_) { /* table may not exist */ }
                 this.db!.exec('DELETE FROM meetings');
             })();
+            removeAllStoredScreenshots(this.getMeetingScreenshotsRoot());
 
             console.log('[DatabaseManager] All data cleared from database.');
             return true;

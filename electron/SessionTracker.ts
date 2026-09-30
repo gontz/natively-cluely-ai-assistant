@@ -5,6 +5,8 @@
 import { RecapLLM } from './llm';
 import { isVerboseLogging } from './verboseLog';
 import type { AttemptId, TurnIdentity } from './llm/turnIdentity';
+import { randomUUID } from 'crypto';
+import type { MeetingScreenshot } from './services/meeting/MeetingScreenshotStore';
 
 // Canned-fallback phrases that mean the model gave up entirely, not phrases
 // that might legitimately appear inside a real answer. Matched only when the
@@ -167,6 +169,14 @@ export class SessionTracker {
     private fullTranscript: TranscriptSegment[] = [];
     private fullUsage: any[] = []; // UsageInteraction
     private sessionStartTime: number = Date.now();
+
+    // Screenshots captured during this session (copies under
+    // <userData>/meeting-screenshots/<screenshotSessionKey>/), saved with the
+    // meeting. The key is re-minted on reset(), so a copy that finishes after
+    // the session ended can tell it no longer belongs here.
+    private static readonly MAX_SESSION_SCREENSHOTS = 200;
+    private sessionScreenshots: MeetingScreenshot[] = [];
+    private screenshotSessionKey: string = randomUUID();
 
     // Rolling summarization: epoch summaries preserve early context when arrays are compacted
     private static readonly MAX_EPOCH_SUMMARIES = 5;
@@ -752,6 +762,27 @@ export class SessionTracker {
         return this.sessionStartTime;
     }
 
+    getScreenshotSessionKey(): string {
+        return this.screenshotSessionKey;
+    }
+
+    getSessionScreenshots(): MeetingScreenshot[] {
+        return this.sessionScreenshots;
+    }
+
+    /**
+     * Record a screenshot copied for this session. Returns false (caller should
+     * discard the copy) when `sessionKey` is not the current session's key, or
+     * the per-session cap is reached. Dropping at the cap instead of evicting
+     * keeps every recorded row pointing at a file that is kept.
+     */
+    addSessionScreenshot(sessionKey: string, shot: MeetingScreenshot): boolean {
+        if (sessionKey !== this.screenshotSessionKey) return false;
+        if (this.sessionScreenshots.length >= SessionTracker.MAX_SESSION_SCREENSHOTS) return false;
+        this.sessionScreenshots.push(shot);
+        return true;
+    }
+
     getSessionEpoch(): number {
         return this.sessionEpoch;
     }
@@ -816,6 +847,8 @@ export class SessionTracker {
         this.contextItems = [];
         this.fullTranscript = [];
         this.fullUsage = [];
+        this.sessionScreenshots = [];
+        this.screenshotSessionKey = randomUUID();
         this.transcriptEpochSummaries = [];
         this.sessionStartTime = Date.now();
         this.lastAssistantMessage = null;
