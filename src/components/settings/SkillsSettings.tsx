@@ -19,6 +19,7 @@ import type {
     UploadSkillOutcome,
 } from '../../types/electron';
 import { LiquidGlassButton } from '../../ui-components/LiquidGlassButton';
+import { SettingsToggle } from './SettingsToggle';
 import {
     Collapse,
     CollapseItem,
@@ -116,6 +117,11 @@ export const SkillsSettings: React.FC = () => {
     // label's activation behaviour. It drives the input directly instead.
     const uploadInputRef = useRef<HTMLInputElement | null>(null);
     const [showAdvanced, setShowAdvanced] = useState(false);
+    // "Apply skills automatically" (settings key skillAutoMatchEnabled).
+    // Starts ON to match the main process's unset default; the real value
+    // replaces it as soon as the bridge answers.
+    const [autoMatch, setAutoMatch] = useState(true);
+    const [autoMatchBusy, setAutoMatchBusy] = useState(false);
 
     const loadSkills = useCallback(async () => {
         setLoading(true);
@@ -153,6 +159,39 @@ export const SkillsSettings: React.FC = () => {
     useEffect(() => {
         loadSkills();
     }, [loadSkills]);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (typeof window.electronAPI?.skillsGetAutoMatch !== 'function') return;
+        window.electronAPI.skillsGetAutoMatch()
+            .then((value) => { if (!cancelled) setAutoMatch(value !== false); })
+            .catch(() => { /* keep the default */ });
+        return () => { cancelled = true; };
+    }, []);
+
+    // Optimistic flip; reverts and surfaces the error if main refuses.
+    const toggleAutoMatch = async () => {
+        if (autoMatchBusy) return;
+        if (typeof window.electronAPI?.skillsSetAutoMatch !== 'function') {
+            setStatus(BRIDGE_MISSING_MSG);
+            return;
+        }
+        const next = !autoMatch;
+        setAutoMatchBusy(true);
+        setAutoMatch(next);
+        try {
+            const result = await window.electronAPI.skillsSetAutoMatch(next);
+            if (!result?.success) {
+                setAutoMatch(!next);
+                setStatus(result?.error || 'Could not update the skill setting.');
+            }
+        } catch (error: any) {
+            setAutoMatch(!next);
+            setStatus(error?.message || 'Could not update the skill setting.');
+        } finally {
+            setAutoMatchBusy(false);
+        }
+    };
 
     // Auto-cancel the inline confirm state after 6s of inactivity so a stale
     // "Delete / Cancel" affordance never lingers if the user gets distracted
@@ -428,6 +467,24 @@ export const SkillsSettings: React.FC = () => {
                     </Presence>
                     {t('Refresh')}
                 </button>
+            </div>
+
+            {/* Automatic skill selection. Off leaves only the explicit
+                /skill-name prefix. */}
+            <div className="rounded-xl bg-bg-card p-4 flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                    <h4 className="text-sm font-semibold text-text-primary mb-1">{t('Apply skills automatically')}</h4>
+                    <p className="text-xs text-text-secondary">
+                        {t('Typed chat uses an enabled skill when your message matches a phrase quoted in its description. Live answers use a skill tagged with the question\'s answer type (answerTypes in SKILL.md).')}
+                    </p>
+                </div>
+                <SettingsToggle
+                    checked={autoMatch}
+                    onChange={() => { void toggleAutoMatch(); }}
+                    label={t('Apply skills automatically')}
+                    disabled={autoMatchBusy}
+                    className={autoMatch ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
+                />
             </div>
 
             {/* Upload card — drop target. Mirrors the Advanced "Skills Folder"

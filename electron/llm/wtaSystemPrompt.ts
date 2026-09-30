@@ -29,6 +29,10 @@ export interface ActiveSkillLike {
 /** Heading the legacy path uses; kept identical so the model sees one convention. */
 export const ACTIVE_SKILL_HEADING = '## ACTIVE SKILL';
 
+/** Precedence directive placed between the heading and the skill block on the V3 path. */
+export const ACTIVE_SKILL_GOVERNS_DIRECTIVE =
+    "A skill matched this question. Its instructions below define the shape and content of your answer for this turn: follow them as the authoritative format, not as one more option to weigh against the general formatting/contract instructions above. Where the skill's instructions conflict with earlier formatting guidance (structure, sections, voice), the skill wins; only the safety, evidence-grounding, and factual-accuracy rules above still apply.";
+
 /**
  * Compose the WTA system prompt so an active skill survives V3.
  *
@@ -37,7 +41,11 @@ export const ACTIVE_SKILL_HEADING = '## ACTIVE SKILL';
  *   duplicate it.
  * - V3 prompt, no skill -> exactly the V3 prompt. Byte-identical to the old
  *   behaviour, which is what keeps this change inert for non-skill turns.
- * - V3 prompt + skill -> V3 prompt with the skill block appended.
+ * - V3 prompt + skill -> V3 prompt with the skill block appended, framed as
+ *   GOVERNING this turn: a passive footer lost too often against the
+ *   mode/contract instructions composed above it. Safety/evidence rules
+ *   already in `v3SystemPrompt` still apply; only formatting/structure
+ *   precedence shifts to the skill.
  */
 export function composeWtaSystemPrompt(
     v3SystemPrompt: string | null | undefined,
@@ -46,5 +54,5 @@ export function composeWtaSystemPrompt(
 ): string {
     if (!v3SystemPrompt) return legacyPromptOverride;
     if (!activeSkill?.promptBlock) return v3SystemPrompt;
-    return `${v3SystemPrompt}\n\n${ACTIVE_SKILL_HEADING}\n${activeSkill.promptBlock}`;
+    return `${v3SystemPrompt}\n\n${ACTIVE_SKILL_HEADING} (GOVERNS THIS TURN)\n${ACTIVE_SKILL_GOVERNS_DIRECTIVE}\n\n${activeSkill.promptBlock}`;
 }

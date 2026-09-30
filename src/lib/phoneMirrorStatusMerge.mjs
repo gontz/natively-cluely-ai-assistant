@@ -58,6 +58,7 @@ export function mergePhoneMirrorStatus(prev, next) {
       prev.token === n.token &&
       prev.extToken === n.extToken &&
       prev.running === n.running &&
+      prev.answersOnly === n.answersOnly &&
       prev.clients === n.clients &&
       prev.extensionConnected === n.extensionConnected &&
       prev.extPairedAt === n.extPairedAt

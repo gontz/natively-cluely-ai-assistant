@@ -3718,6 +3718,30 @@ export class IntelligenceEngine extends EventEmitter {
                     })();
                     const _ctx = this.v3ModeRetrievalContext(_screenDescription);
                     if (!_ctx) return undefined;
+                    // Automatic skill routing for live answers: this turn's
+                    // AnswerPlanner classification (already computed above, so
+                    // no extra LLM call) picks an enabled skill whose author
+                    // tagged it with a matching `answerTypes` entry. Untagged
+                    // skills never fire here. Skipped when the caller already
+                    // supplied a skill (WhatToAnswerLLM appends that one) or
+                    // the user turned auto-matching off in Settings > Skills.
+                    let _autoSkill: { id: string; name: string; promptBlock: string } | undefined;
+                    try {
+                        const { isSkillAutoMatchEnabled, matchSkillByAnswerType } = require('./services/skills/skillMatcher') as typeof import('./services/skills/skillMatcher');
+                        const { SettingsManager: _Settings } = require('./services/SettingsManager') as typeof import('./services/SettingsManager');
+                        if (!options?.activeSkill && isSkillAutoMatchEnabled(_Settings.getInstance().get('skillAutoMatchEnabled'))) {
+                            const { SkillsManager } = require('./services/SkillsManager') as typeof import('./services/SkillsManager');
+                            const enabledSkills = SkillsManager.getInstance().listSkills().filter((s) => s.enabled !== false);
+                            const autoMatch = matchSkillByAnswerType(answerPlan.answerType, enabledSkills, String(wtaTurnQuestion || ''));
+                            const autoSkill = autoMatch ? SkillsManager.getInstance().getSkill(autoMatch.skillId) : null;
+                            if (autoSkill && autoSkill.enabled !== false) {
+                                _autoSkill = { id: autoSkill.id, name: autoSkill.name, promptBlock: SkillsManager.getInstance().buildPromptBlock(autoSkill) };
+                                console.log(`[IntelligenceEngine] Skill auto-triggered on live turn: ${autoSkill.id} (answerType=${answerPlan.answerType})`);
+                            }
+                        }
+                    } catch (skillErr: any) {
+                        console.warn('[IntelligenceEngine] Automatic skill matching failed on WTA V3 turn, proceeding without:', skillErr?.message || skillErr);
+                    }
                     const _v3 = await buildV3Prompt({
                         surface: 'what-to-answer',
                         // Low-confidence query rewrite: the user's fast model, 1.5 s hard cap.
@@ -4028,7 +4052,14 @@ export class IntelligenceEngine extends EventEmitter {
                         console.log(`[IntelligenceEngine] WTA V3 prompt in effect: answerability=${_v3.answerability} evidence=${_v3.evidenceCount} fallback=${_v3.fallbackUsed}`);
                     }
                     return _v3 ? {
-                        system: _v3.system, user: _v3.user,
+                        // An auto-matched skill rides the same governing
+                        // composition WhatToAnswerLLM uses for a caller-supplied
+                        // one (composeWtaSystemPrompt), appended after V3's own
+                        // composition so its safety/evidence rules stay in force.
+                        system: _autoSkill
+                            ? (require('./llm/wtaSystemPrompt') as typeof import('./llm/wtaSystemPrompt')).composeWtaSystemPrompt(_v3.system, _v3.system, _autoSkill)
+                            : _v3.system,
+                        user: _v3.user,
                         // T4: the evidence this prompt was composed from. The
                         // post-stream doc-grounded validator uses THIS rather
                         // than a fresh legacy retrieval — see the validator's

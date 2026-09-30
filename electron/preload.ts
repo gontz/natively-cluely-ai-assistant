@@ -1550,6 +1550,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Skills — local SKILL.md instructions surfaced in Settings and the overlay.
   skillsRefresh: () => ipcRenderer.invoke('skills:list'),
   skillsOpenFolder: () => ipcRenderer.invoke('skills:open-folder'),
+  skillsGetAutoMatch: () => ipcRenderer.invoke('skills:get-auto-match'),
+  skillsSetAutoMatch: (enabled: boolean) => ipcRenderer.invoke('skills:set-auto-match', enabled),
   // Per-skill management: hard-delete. Built-ins are refused inside the
   // manager. Enable/disable is intentionally NOT exposed — users who don't
   // want a skill delete it instead (see SkillsSettings.tsx).
@@ -1570,6 +1572,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   phoneMirrorDisable: () => ipcRenderer.invoke('phone-mirror:disable'),
   phoneMirrorSetLan: (exposeOnLan: boolean) =>
     ipcRenderer.invoke('phone-mirror:set-lan', exposeOnLan),
+  phoneMirrorSetAnswersOnly: (answersOnly: boolean) =>
+    ipcRenderer.invoke('phone-mirror:set-answers-only', answersOnly),
   phoneMirrorRotateToken: () => ipcRenderer.invoke('phone-mirror:rotate-token'),
   phoneMirrorArmExtension: () => ipcRenderer.invoke('phone-mirror:arm-extension'),
   phoneMirrorListTabs: () => ipcRenderer.invoke('phone-mirror:list-tabs'),

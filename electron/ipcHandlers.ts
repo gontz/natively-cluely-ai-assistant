@@ -26,6 +26,7 @@ import { RERANK_CANDIDATE_POOL, resolveRerankPoolSize } from './services/modes/r
 import { buildRerankProbe } from './services/reranking/rerankProbe';
 import { ProviderStatusRegistry } from './services/ProviderStatusRegistry';
 import { SkillsManager } from './services/SkillsManager';
+import { isSkillAutoMatchEnabled, matchSkillForMessage } from './services/skills/skillMatcher';
 import { SAFE_DOCUMENT_EXTENSIONS } from './services/SafeDocumentTextExtractor';
 import { DEFAULT_BUILTIN_SKILL_IDS, type SkillUploadPayload } from './services/skills/SkillValidator';
 
@@ -1545,6 +1546,30 @@ export function initializeIpcHandlers(appState: AppState): void {
             console.warn('[IPC] Skill lookup failed:', skillErr?.message || skillErr);
             event.sender.send('gemini-stream-error', `Skill lookup failed: ${skillErr?.message || 'unknown error'}`, { streamId: myStreamId });
             return null;  // sibling error paths return null; handler is typed `| null`
+          }
+        } else {
+          // Automatic skill triggering (no /skill-name prefix typed): an
+          // ENABLED skill fires when the message matches a trigger phrase its
+          // author double-quoted in the description (exact substring, or the
+          // fuzzy word-overlap tier in skillMatcher.ts). No LLM call. A skill
+          // without quoted phrases never auto-fires, and the message itself is
+          // left untouched (skillStrippedMessage stays null). Any failure,
+          // including reading the setting, answers without a skill.
+          try {
+            const autoMatchOn = isSkillAutoMatchEnabled(SettingsManager.getInstance().get('skillAutoMatchEnabled'));
+            const enabledSkills = autoMatchOn
+              ? SkillsManager.getInstance().listSkills().filter((s) => s.enabled !== false)
+              : [];
+            const autoMatch = typeof message === 'string' ? matchSkillForMessage(message, enabledSkills) : null;
+            if (autoMatch) {
+              const autoSkill = SkillsManager.getInstance().getSkill(autoMatch.skillId);
+              if (autoSkill && autoSkill.enabled !== false) {
+                skillPromptBlock = SkillsManager.getInstance().buildPromptBlock(autoSkill);
+                console.log(`[IPC] Skill auto-triggered: ${autoSkill.id} (matched "${autoMatch.matchedPhrase}")`);
+              }
+            }
+          } catch (autoSkillErr: any) {
+            console.warn('[IPC] Automatic skill matching failed, proceeding without:', autoSkillErr?.message || autoSkillErr);
           }
         }
 
@@ -17670,6 +17695,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Settings > Skills "Apply skills automatically". Unset reads as ON.
+  safeHandle('skills:get-auto-match', () => {
+    try {
+      return isSkillAutoMatchEnabled(SettingsManager.getInstance().get('skillAutoMatchEnabled'));
+    } catch (e: any) {
+      console.warn('[IPC] skills:get-auto-match error:', e?.message || e);
+      return true;
+    }
+  });
+
+  safeHandle('skills:set-auto-match', (_evt, enabled: boolean) => {
+    try {
+      SettingsManager.getInstance().set('skillAutoMatchEnabled', !!enabled);
+      return { success: true, enabled: !!enabled };
+    } catch (e: any) {
+      console.warn('[IPC] skills:set-auto-match error:', e?.message || e);
+      return { success: false, error: e?.message || 'failed to update skill auto-match setting' };
+    }
+  });
+
   safeHandle('skills:open-folder', async () => {
     try {
       return await SkillsManager.getInstance().openSkillsFolder();
@@ -17718,6 +17763,12 @@ export function initializeIpcHandlers(appState: AppState): void {
         stagingRoot: os.tmpdir(),
         autoInstall: opts?.autoInstall ?? false,
       });
+      // SkillInstaller writes straight to disk without going through
+      // SkillsManager. The directory watcher would invalidate the in-memory
+      // skills cache eventually; doing it here makes a freshly installed skill
+      // visible to the very next listSkills(). No-op for a preview or a
+      // failed validation.
+      Manager.getInstance().invalidateCache();
       return outcome;
     } catch (e: any) {
       console.warn('[IPC] skills:upload error:', e?.message || e);
@@ -17807,6 +17858,15 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
       console.error('[IPC] phone-mirror:set-lan error:', e);
       return { error: e?.message || 'failed to update lan setting' };
+    }
+  });
+
+  safeHandle('phone-mirror:set-answers-only', async (_, answersOnly: boolean) => {
+    try {
+      return await PhoneMirrorService.getInstance().setAnswersOnly(!!answersOnly);
+    } catch (e: any) {
+      console.error('[IPC] phone-mirror:set-answers-only error:', e);
+      return { error: e?.message || 'failed to update answers-only setting' };
     }
   });
 
