@@ -19,6 +19,7 @@ import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
 import { vividDarkCodeTheme } from '../lib/codeTheme';
 import { splitGistLine } from '../lib/displayMarkup';
 import { splitIntoWordRuns } from '../lib/textRevealAnimation.mjs';
+import { mergeTranscriptTurns } from '../lib/transcriptTurnMerge.mjs';
 
 registerPrismLanguages();
 
@@ -2773,18 +2774,23 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                 })()}
                                 <div className="space-y-6">
                                     {(() => {
-                                        const filteredTranscript = meeting.transcript?.filter(entry => {
+                                        // STT stores one row per segment; fold consecutive
+                                        // same-speaker rows into one turn for display only.
+                                        const filteredTranscript = mergeTranscriptTurns(meeting.transcript?.filter(entry => {
                                             const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
                                             return !isHidden;
-                                        }) || [];
+                                        }));
 
                                         if (filteredTranscript.length === 0) {
                                             return <p className="text-text-tertiary">{t('No transcript available.')}</p>;
                                         }
 
                                         // Find the segment index closest to a pending evidence timestamp.
+                                        // A turn spans [timestamp, endTimestamp]; a time inside it is distance 0.
                                         const scrollIndex = pendingScrollTs == null ? -1 : filteredTranscript.reduce((best, e, idx) => {
-                                            const d = Math.abs((e.timestamp || 0) - pendingScrollTs);
+                                            const start = e.timestamp || 0;
+                                            const end = Math.max(start, e.endTimestamp || 0);
+                                            const d = pendingScrollTs < start ? start - pendingScrollTs : pendingScrollTs > end ? pendingScrollTs - end : 0;
                                             return d < best.d ? { d, idx } : best;
                                         }, { d: Infinity, idx: -1 }).idx;
 
