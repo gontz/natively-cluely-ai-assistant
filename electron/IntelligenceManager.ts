@@ -245,6 +245,10 @@ export class IntelligenceManager extends EventEmitter {
     prefetchAutoAnswer(questionId: string, text: string): void {
         this.engine.prefetchAutoAnswer(questionId, text);
     }
+    /** The judge rejected this prefetched candidate: free the speculative slot. */
+    abandonSpeculative(questionId: string): void {
+        this.engine.abandonSpeculative(questionId);
+    }
     runAutoAnswer(
         question: Parameters<IntelligenceEngine['runAutoAnswer']>[0],
         options: { reuseSpeculative: boolean },
