@@ -1222,6 +1222,8 @@ import { DeepgramStreamingSTT } from "./audio/DeepgramStreamingSTT"
 import { isIntelligenceFlagEnabled } from "./intelligence/intelligenceFlags"
 import { buildJudgePrompt } from "./intelligence/autoAnswer/AutoAnswerJudge"
 import { SimpleAutoAnswerEngine } from "./intelligence/autoAnswer/SimpleAutoAnswer"
+import { LiveScreenContextController, resolveLiveScreenContextSettings, LIVE_SCREEN_CONTEXT_DESCRIBE_DEADLINE_MS } from "./services/screen/LiveScreenContextController"
+import type { ScreenUnderstandingResult } from "./services/screen/ScreenUnderstandingService"
 import { resolveAutoAnswerThresholds } from "./context-intelligence/policies/mode-policy-registry"
 import type { SpeechEdge } from "./audio/speechEdge"
 import { SonioxStreamingSTT } from "./audio/SonioxStreamingSTT"
@@ -3278,8 +3280,14 @@ export class AppState {
       if (!this.contentTraceEnabled()) return;
       console.log(`[AutoAnswer:text] ${label}\n    “${text}”`);
     },
-    dispatch: (question, { reuseSpeculative }) => {
-      return this.intelligenceManager.runAutoAnswer(question, { reuseSpeculative }).catch((error) => {
+    dispatch: async (question, { reuseSpeculative }) => {
+      // Live screen context (off by default): at most a short bounded wait on
+      // a capture already running, never a new capture. A reused speculative
+      // stream was started without it, so there is nothing to wait for.
+      const screenContext = reuseSpeculative
+        ? undefined
+        : await this.liveScreenContext.resolveForAnswer().catch((): undefined => undefined);
+      return this.intelligenceManager.runAutoAnswer(question, { reuseSpeculative, ...(screenContext ? { screenContext } : {}) }).catch((error) => {
         console.warn('[Main] Automatic interviewer answer failed:', error);
       });
     },
@@ -3289,7 +3297,12 @@ export class AppState {
     // the judge is still deciding.
     noteCandidate: (id, gen) => this.intelligenceManager.noteAutoAnswerCandidate(id, gen),
     speculativeSnapshot: () => this.intelligenceManager.getSpeculativeSnapshot(),
-    prefetchAnswer: (id, text) => this.intelligenceManager.prefetchAutoAnswer(id, text),
+    prefetchAnswer: (id, text) => {
+      this.intelligenceManager.prefetchAutoAnswer(id, text);
+      // A question is forming: refresh the screen description if it is older
+      // than one interval (no-op when live screen context is off).
+      void this.liveScreenContext.refresh();
+    },
     abandonSpeculative: (id) => this.intelligenceManager.abandonSpeculative(id),
     ...((process.env.NATIVELY_AUTO_ANSWER_JUDGE || '').toLowerCase() === 'off' ? {} : {
       judgeCandidate: async (req, signal) => {
@@ -3345,6 +3358,7 @@ export class AppState {
 
   /** before-quit: release the Smart Turn session before the process winds down. */
   public disposeAutoAnswerForShutdown(): void {
+    this.stopLiveScreenContext();
   }
 
   private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider | null {
@@ -6545,6 +6559,7 @@ export class AppState {
     const meetingGeneration = ++this._meetingGeneration;
     this.isMeetingActive = true;
     this.broadcastMeetingState()
+    this.liveScreenContext.start();
     if (metadata) {
       this.intelligenceManager.setMeetingMetadata(metadata);
     }
@@ -6782,6 +6797,7 @@ export class AppState {
     }
 
     this.cancelAutoAnswer();
+    this.stopLiveScreenContext();
     // Cover the window between here and `_pendingTeardown` assignment, during which
     // the new in-flight-audio-init await below yields the event loop.
     this._endMeetingInFlight = true;
@@ -7696,6 +7712,99 @@ export class AppState {
         this.screenshotCaptureInProgress = false;
       }
     }
+  }
+
+  // ── Live screen context (services/screen/LiveScreenContextController.ts) ──
+  // Opt-in periodic screen description during a live session, plus the
+  // optional screen-only auto-answer. Ported from rishikeshl0510's fork
+  // (0a4b3de / d61a740); the scheduling lives in the controller, this block is
+  // only the host wiring.
+  private readonly liveScreenContext = new LiveScreenContextController({
+    settings: () => {
+      const s = SettingsManager.getInstance();
+      return resolveLiveScreenContextSettings({
+        liveScreenContextEnabled: s.get('liveScreenContextEnabled'),
+        screenOnlyAutoAnswerEnabled: s.get('screenOnlyAutoAnswerEnabled'),
+        liveScreenContextIntervalMs: s.get('liveScreenContextIntervalMs'),
+      });
+    },
+    sessionActive: () => this.isMeetingActive,
+    captureAllowed: () => {
+      const scopes = SettingsManager.getInstance().get('providerDataScopes') || {};
+      if (scopes.screenshots === false) return { ok: false, reason: 'screenshots data scope is off' };
+      // The capture session snapshots and restores the window mode; only safe
+      // once the overlay is up (the fork hit a meeting-start capture forcing
+      // the window back to the launcher).
+      if (this.windowHelper.getCurrentWindowMode() !== 'overlay') return { ok: false, reason: 'overlay not shown' };
+      if (this.screenshotCaptureInProgress) return { ok: false, reason: 'another capture in progress' };
+      return { ok: true };
+    },
+    // The app's one capture path: same window hide/restore and the same
+    // ScreenshotHelper desktopCapturer call (with its macOS permission check),
+    // just kept out of the user's screenshot queue and meeting history.
+    capture: () => this.withScreenshotCaptureSession('full', false, (session) =>
+      this.screenshotHelper.takeBackgroundScreenshot(this.getTargetDisplayForFullScreenshot(session))
+    ),
+    describe: (imagePath) => this.describeLiveScreen(imagePath),
+    screenOnlyEnv: () => ({
+      autoAnswerEnabled: this._autoAnswerEnabled,
+      sessionActive: this.isMeetingActive,
+      engineAccepting: this.intelligenceManager.canAutoAnswer(),
+      answerStreaming: this.intelligenceManager.isAnswerStreaming(),
+      interviewerSpeechPending: this.simpleAutoAnswer.hasPendingInterviewerSpeech(),
+    }),
+    dispatchScreenQuestion: (text, result) => {
+      const now = Date.now();
+      return this.intelligenceManager.runAutoAnswer({
+        id: `${this._meetingGeneration}-screen${now}`,
+        text,
+        confidence: 0.8,
+        answerability: 0.8,
+        dialogueAct: 'general_question',
+        isFollowUp: false,
+        candidateGeneration: 0,
+      }, { reuseSpeculative: false, screenContext: result });
+    },
+    log: (line) => console.log(line),
+  });
+
+  private async describeLiveScreen(imagePath: string): Promise<ScreenUnderstandingResult> {
+    const { getScreenUnderstandingService } = require('./services/screen/ScreenUnderstandingService');
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    const settings = SettingsManager.getInstance();
+    const credentials = CredentialsManager.getInstance();
+    const providerScopes = settings.get('providerDataScopes') || {};
+    const mode = settings.getScreenUnderstandingMode();
+    // Same policy object as the manual What-to-Answer path: private_vision and
+    // the screenshots scope bind a background capture exactly as a manual one.
+    return getScreenUnderstandingService().understand({
+      modeId: 'live-screen-context',
+      // Describe the screen rather than answer: the structured-extraction
+      // prompt, which also returns hasUnansweredQuestion.
+      userAction: 'transcribe',
+      qualityMode: 'fast',
+      imagePaths: [imagePath],
+      screenUnderstandingMode: mode,
+      technicalInterviewVisionFirst: settings.getTechnicalInterviewVisionFirst(),
+      providerPolicy: {
+        localOnly: mode === 'private_vision',
+        allowScreenshots: providerScopes.screenshots !== false,
+        visionAvailable: credentials.anyVisionProviderConfigured?.() ?? true,
+        localVisionAvailable: credentials.anyLocalVisionProviderConfigured?.() ?? false,
+      },
+      providerPreference: 'gemini_first',
+      totalDeadlineMsOverride: LIVE_SCREEN_CONTEXT_DESCRIBE_DEADLINE_MS,
+    });
+  }
+
+  private stopLiveScreenContext(): void {
+    this.liveScreenContext.stop();
+    void this.screenshotHelper?.clearBackgroundScreenshots().catch((): void => {});
+  }
+
+  /** Settings > Screen & Vision changed a live-screen-context value. */
+  public onLiveScreenContextSettingsChanged(): void {
+    this.liveScreenContext.settingsChanged();
   }
 
   // Screenshot management methods
