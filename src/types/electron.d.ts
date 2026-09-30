@@ -1080,6 +1080,9 @@ export interface ElectronAPI {
   // Skills
   skillsRefresh: () => Promise<SkillSummary[]>;
   skillsOpenFolder: () => Promise<{ success: boolean; path: string; error?: string }>;
+  // "Apply skills automatically" (settings key skillAutoMatchEnabled; unset reads as true).
+  skillsGetAutoMatch: () => Promise<boolean>;
+  skillsSetAutoMatch: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; error?: string }>;
   // Per-skill management: hard-delete. Built-ins are refused inside the
   // manager. Enable/disable is intentionally NOT exposed on the renderer —
   // users who don't want a skill delete it instead.
@@ -1287,6 +1290,8 @@ export interface SkillSummary {
   name: string;
   description: string;
   source: 'builtin' | 'userData';
+  /** Frontmatter `answerTypes:` tags; live auto-answer skill routing matches on these. */
+  answerTypes?: string[];
   enabled: boolean;
 }
 

@@ -98,6 +98,11 @@ export interface AppSettings {
     // When true, PhoneMirrorService drops publishUserMessage() entirely: the
     // phone shows only AI answers, never the questions that produced them.
     phoneMirrorAnswersOnly?: boolean;
+    // Automatic skill selection (skillMatcher.ts). Unset = ON: typed chat
+    // matches quoted trigger phrases, live auto-answers match skills tagged
+    // with `answerTypes`. Only an explicit `false` turns both off; the
+    // /skill-name prefix keeps working either way.
+    skillAutoMatchEnabled?: boolean;
     // External optional provider. Default false: do not spawn Ollama unless
     // the user selects an Ollama model or explicitly opts into auto-start.
     autoStartOllama?: boolean;
