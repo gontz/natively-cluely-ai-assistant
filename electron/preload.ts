@@ -777,7 +777,7 @@ interface ElectronAPI {
     options?: { skipSystemPrompt?: boolean; ignoreKnowledgeMode?: boolean },
   ) => Promise<void>;
   onGeminiStreamToken: (callback: (token: string, meta?: { streamId?: number }) => void) => () => void;
-  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number }) => void) => () => void;
+  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => void) => () => void;
   onGeminiStreamError: (callback: (error: string, meta?: { streamId?: number | null; source?: string }) => void) => () => void;
 
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void;
@@ -1221,6 +1221,20 @@ interface ElectronAPI {
     modeId: string,
   ) => Promise<{ success: boolean; statuses?: Array<{ fileId: string; fileName: string; status: string; chunkCount: number }>; error?: string }>;
   onModeFileIndexStatus: (callback: (data: { modeId: string; fileId: string; phase: 'indexing' | 'done' }) => void) => () => void;
+  // Free-tier Interview Knowledge (electron/services/interviewKnowledge/): separate from the modesXxx bindings above; never Pro/trial-gated.
+  knowledgeDocAddText: (params: { title: string; content: string; collectionId?: string | null; docType?: string }) => Promise<{ success: boolean; doc?: { id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }; error?: string }>;
+  knowledgeDocAddFile: (params?: { collectionId?: string | null; docType?: string }) => Promise<{ success: boolean; doc?: { id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }; cancelled?: boolean; error?: string }>;
+  knowledgeDocAddFolder: (params?: { collectionId?: string | null }) => Promise<{ success: boolean; added?: number; skipped?: number; errors?: Array<{ path: string; reason: string }>; cancelled?: boolean; error?: string }>;
+  knowledgeDocList: (collectionId?: string | null) => Promise<{ success: boolean; docs: Array<{ id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }>; error?: string }>;
+  knowledgeDocGet: (id: string) => Promise<{ success: boolean; doc?: { id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }; error?: string }>;
+  knowledgeDocDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
+  knowledgeDocGetStatus: (id: string) => Promise<{ success: boolean; status: string; chunkCount: number; error?: string }>;
+  knowledgeCollectionCreate: (params: { name: string; interviewerName?: string; contextNotes?: string }) => Promise<{ success: boolean; collection?: { id: string; name: string; interviewerName: string | null; contextNotes: string | null; createdAt: string }; error?: string }>;
+  knowledgeCollectionList: () => Promise<{ success: boolean; collections: Array<{ id: string; name: string; interviewerName: string | null; contextNotes: string | null; createdAt: string }>; error?: string }>;
+  knowledgeCollectionUpdate: (id: string, updates: { name?: string; interviewerName?: string | null; contextNotes?: string | null }) => Promise<{ success: boolean; error?: string }>;
+  knowledgeCollectionDelete: (id: string) => Promise<{ success: boolean; error?: string }>;
+  knowledgeCollectionGetActive: () => Promise<{ success: boolean; activeCollectionId: string | null; error?: string }>;
+  knowledgeCollectionSetActive: (id: string | null) => Promise<{ success: boolean; error?: string }>;
   onKnowledgeIndexProgress: (callback: (data: { fileId: string; status: string; startedAt?: number; finishedAt?: number; error?: string }) => void) => () => void;
   knowledgeListPacks: (modeId: string) => Promise<{ success: boolean; packs: Array<{ id: string; sourceId: string; fileName: string; cardCount: number; entityCount: number; relationCount: number; packVersion: number; updatedAt: string }>; error?: string }>;
   knowledgeGetPack: (fileId: string) => Promise<{ success: boolean; pack: any | null; error?: string }>;
@@ -2359,8 +2373,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
   },
 
-  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number }) => void) => {
-    const subscription = (_: any, data?: { finalText?: string; streamId?: number }) => callback(data);
+  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => void) => {
+    const subscription = (_: any, data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => callback(data);
     ipcRenderer.on('gemini-stream-done', subscription);
     return () => {
       ipcRenderer.removeListener('gemini-stream-done', subscription);
@@ -3097,6 +3111,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('mode-file-index-status', subscription);
     };
   },
+  // Free-tier Interview Knowledge (electron/services/interviewKnowledge/): never Pro/trial-gated.
+  knowledgeDocAddText: (params: { title: string; content: string; collectionId?: string | null; docType?: string }) =>
+    ipcRenderer.invoke('knowledge-doc:add-text', params),
+  knowledgeDocAddFile: (params?: { collectionId?: string | null; docType?: string }) => ipcRenderer.invoke('knowledge-doc:add-file', params),
+  knowledgeDocAddFolder: (params?: { collectionId?: string | null }) => ipcRenderer.invoke('knowledge-doc:add-folder', params),
+  knowledgeDocList: (collectionId?: string | null) => ipcRenderer.invoke('knowledge-doc:list', collectionId),
+  knowledgeDocGet: (id: string) => ipcRenderer.invoke('knowledge-doc:get', id),
+  knowledgeDocDelete: (id: string) => ipcRenderer.invoke('knowledge-doc:delete', id),
+  knowledgeDocGetStatus: (id: string) => ipcRenderer.invoke('knowledge-doc:get-status', id),
+  knowledgeCollectionCreate: (params: { name: string; interviewerName?: string; contextNotes?: string }) =>
+    ipcRenderer.invoke('knowledge-collection:create', params),
+  knowledgeCollectionList: () => ipcRenderer.invoke('knowledge-collection:list'),
+  knowledgeCollectionUpdate: (id: string, updates: { name?: string; interviewerName?: string | null; contextNotes?: string | null }) =>
+    ipcRenderer.invoke('knowledge-collection:update', id, updates),
+  knowledgeCollectionDelete: (id: string) => ipcRenderer.invoke('knowledge-collection:delete', id),
+  knowledgeCollectionGetActive: () => ipcRenderer.invoke('knowledge-collection:get-active'),
+  knowledgeCollectionSetActive: (id: string | null) => ipcRenderer.invoke('knowledge-collection:set-active', id),
   knowledgeListPacks: (modeId: string) => ipcRenderer.invoke('knowledge:list-packs', modeId),
   knowledgeGetPack: (fileId: string) => ipcRenderer.invoke('knowledge:get-pack', fileId),
   knowledgeRegeneratePack: (params: { fileId: string; modeId: string; fileName: string }) =>

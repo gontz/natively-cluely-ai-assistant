@@ -2530,6 +2530,26 @@ export class AppState {
         ModesManager.getInstance().setSharedEmbeddingPipeline(modeEmbeddingPipeline);
         this.scheduleModeReferenceIndexRetry();
 
+        // Interview Knowledge (electron/services/interviewKnowledge/) reuses the
+        // SAME initialized pipeline, for the same reason as ModesManager above.
+        // Then re-embed, in the background, any doc left pending or stranded in
+        // an old embedding space (provider change in Settings) so the first live
+        // question does not pay for it.
+        try {
+          const { InterviewKnowledgeRetriever } = require('./services/interviewKnowledge/InterviewKnowledgeRetriever');
+          InterviewKnowledgeRetriever.getInstance().setSharedEmbeddingPipeline(modeEmbeddingPipeline);
+          (async () => {
+            try {
+              await modeEmbeddingPipeline?.waitForReady?.();
+              await InterviewKnowledgeRetriever.getInstance().ensureAllIndexed();
+            } catch (e: any) {
+              console.warn('[main] Interview Knowledge ensureAllIndexed kick failed (non-fatal):', e?.message || e);
+            }
+          })();
+        } catch (e: any) {
+          console.warn('[main] Interview Knowledge wiring failed (non-fatal):', e?.message || e);
+        }
+
         // Context Intelligence V3: hand the engine LAZY access to the meeting
         // retriever. IntelligenceManager was constructed before this block, so a
         // provider closure is passed rather than the instance — it also means a

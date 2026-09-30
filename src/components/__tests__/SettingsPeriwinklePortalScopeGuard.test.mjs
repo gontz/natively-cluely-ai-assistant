@@ -46,6 +46,7 @@ const GUARDED_FILES = [
   'src/components/settings/help/HelpParts.tsx',
   'src/components/settings/HowItWorksRefund.tsx',
   'src/components/settings/IntelligenceSettings.tsx',
+  'src/components/settings/KnowledgeDocsPanel.tsx',
   'src/components/settings/ModesSettings.tsx',
   'src/components/settings/NativelyApiSettings.tsx',
   'src/components/settings/NativelyProSettings.tsx',

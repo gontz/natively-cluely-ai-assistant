@@ -451,6 +451,7 @@ export class DatabaseManager {
             }
 
             this.runMigrations();
+            this.ensureInterviewKnowledgeSchema();
         } catch (error) {
             console.error('[DatabaseManager] Failed to initialize database:', error);
             throw error;
@@ -501,6 +502,72 @@ export class DatabaseManager {
             // (the pre-fix status quo), but every other table still works, so a
             // failure here must not take the whole boot down with it.
             console.error('[DatabaseManager] Failed to ensure the reserved __profile_okf__ mode row:', (e as Error)?.message || e);
+        }
+    }
+
+    /**
+     * Interview Knowledge tables (electron/services/interviewKnowledge/).
+     *
+     * APPLIED UNCONDITIONALLY ON EVERY BOOT, NOT VERSION-GATED — the same rule
+     * as ensureProfileOkfSentinelMode and meetings.user_titled, for the same
+     * reason: parallel branches have raced user_version numbers twice already
+     * (see the MERGE NOTEs in runMigrations), and a gate that loses the race
+     * never runs again. Everything here is additive and idempotent by
+     * construction (IF NOT EXISTS, duplicate-column ALTERs swallowed), so it
+     * is safe on every existing database, including one created by the
+     * rishikeshl0510 fork, whose v32–v34 migrations built these same tables.
+     *
+     * Called after runMigrations, not from inside it: a failed earlier
+     * migration returns early from runMigrations, and that must not also take
+     * this independent feature's tables down with it.
+     *
+     * Chunk text and vectors are NOT stored here: ModeHybridRetriever owns
+     * them in mode_reference_chunks / mode_reference_index_state, keyed by the
+     * `ik_`-prefixed doc id, so there is exactly one embedding pipeline.
+     */
+    private ensureInterviewKnowledgeSchema(): void {
+        if (!this.db) return;
+        try {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS interview_knowledge_collections (
+                    id                TEXT PRIMARY KEY,
+                    name              TEXT NOT NULL,
+                    interviewer_name  TEXT,
+                    context_notes     TEXT,
+                    created_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS interview_knowledge_docs (
+                    id              TEXT PRIMARY KEY,
+                    title           TEXT NOT NULL,
+                    content         TEXT NOT NULL,
+                    content_sha256  TEXT NOT NULL,
+                    source          TEXT NOT NULL DEFAULT 'paste',
+                    created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    collection_id   TEXT REFERENCES interview_knowledge_collections(id) ON DELETE CASCADE,
+                    doc_type        TEXT NOT NULL DEFAULT 'other'
+                );
+            `);
+            // A table created by an older build (the fork's v32) lacks these.
+            for (const alter of [
+                'ALTER TABLE interview_knowledge_docs ADD COLUMN collection_id TEXT REFERENCES interview_knowledge_collections(id) ON DELETE CASCADE',
+                "ALTER TABLE interview_knowledge_docs ADD COLUMN doc_type TEXT NOT NULL DEFAULT 'other'",
+            ]) {
+                try { this.db.exec(alter); } catch { /* column already exists */ }
+            }
+            this.db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_interview_knowledge_docs_created
+                    ON interview_knowledge_docs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_interview_knowledge_docs_collection
+                    ON interview_knowledge_docs(collection_id);
+                CREATE TABLE IF NOT EXISTS interview_knowledge_state (
+                    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+                    active_collection_id TEXT REFERENCES interview_knowledge_collections(id) ON DELETE SET NULL
+                );
+            `);
+        } catch (e) {
+            // Never fatal: the feature's IPC handlers report the missing table
+            // as an error; every other table is unaffected.
+            console.error('[DatabaseManager] Failed to ensure Interview Knowledge tables:', (e as Error)?.message || e);
         }
     }
 

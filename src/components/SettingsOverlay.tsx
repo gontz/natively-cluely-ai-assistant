@@ -10,6 +10,8 @@ import {
     Star, AlertCircle, Gift, Smartphone, Cpu, Shield, Code2, Headphones, Boxes
 } from 'lucide-react';
 import { AutoAnswerIcon } from './AutoAnswerIcon';
+import { BookOpen } from 'lucide-react';
+import { KnowledgeDocsPanel } from './settings/KnowledgeDocsPanel';
 import { HiCreditCard } from 'react-icons/hi2';
 import { analytics } from '../lib/analytics/analytics.service';
 import { AboutSection } from './AboutSection';
@@ -479,6 +481,7 @@ const SETTINGS_NAV_ORDER = [
     'keybinds',
     'phone-mirror',
     'intelligence',
+    'knowledge',
     'help',
     'about',
 ];
@@ -2227,6 +2230,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     >
                                         {activeTab === 'intelligence' && navActivePill}
                                         <Cpu size={16} /> {t('Intelligence')}
+                                    </button>
+
+                                    <button
+                                        onClick={() => setActiveTab('knowledge')}
+                                        className={navItemClass(activeTab === 'knowledge')}
+                                    >
+                                        {activeTab === 'knowledge' && navActivePill}
+                                        <BookOpen size={16} /> {t('Knowledge')}
                                     </button>
 
 
@@ -4384,6 +4395,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
                             {activeTab === 'intelligence' && (
                                 <IntelligenceSettings />
+                            )}
+
+                            {activeTab === 'knowledge' && (
+                                <KnowledgeDocsPanel />
                             )}
 
                             {activeTab === 'help' && (

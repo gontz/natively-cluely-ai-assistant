@@ -436,6 +436,20 @@ export interface ElectronAPI {
   modesDeleteReferenceFile: (id: string) => Promise<{ success: boolean; error?: string }>
   modesGetReferenceFileStatus: (modeId: string) => Promise<{ success: boolean; statuses?: Array<{ fileId: string; fileName: string; status: string; chunkCount: number }>; error?: string }>
   onModeFileIndexStatus: (callback: (data: { modeId: string; fileId: string; phase: 'indexing' | 'done' }) => void) => () => void
+  // Free-tier Interview Knowledge (electron/services/interviewKnowledge/): separate from the modesXxx bindings above; never Pro/trial-gated.
+  knowledgeDocAddText: (params: { title: string; content: string; collectionId?: string | null; docType?: string }) => Promise<{ success: boolean; doc?: { id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }; error?: string }>
+  knowledgeDocAddFile: (params?: { collectionId?: string | null; docType?: string }) => Promise<{ success: boolean; doc?: { id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }; cancelled?: boolean; error?: string }>
+  knowledgeDocAddFolder: (params?: { collectionId?: string | null }) => Promise<{ success: boolean; added?: number; skipped?: number; errors?: Array<{ path: string; reason: string }>; cancelled?: boolean; error?: string }>
+  knowledgeDocList: (collectionId?: string | null) => Promise<{ success: boolean; docs: Array<{ id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }>; error?: string }>
+  knowledgeDocGet: (id: string) => Promise<{ success: boolean; doc?: { id: string; title: string; content: string; contentSha256: string; source: string; createdAt: string; collectionId: string | null; docType: string }; error?: string }>
+  knowledgeDocDelete: (id: string) => Promise<{ success: boolean; error?: string }>
+  knowledgeDocGetStatus: (id: string) => Promise<{ success: boolean; status: string; chunkCount: number; error?: string }>
+  knowledgeCollectionCreate: (params: { name: string; interviewerName?: string; contextNotes?: string }) => Promise<{ success: boolean; collection?: { id: string; name: string; interviewerName: string | null; contextNotes: string | null; createdAt: string }; error?: string }>
+  knowledgeCollectionList: () => Promise<{ success: boolean; collections: Array<{ id: string; name: string; interviewerName: string | null; contextNotes: string | null; createdAt: string }>; error?: string }>
+  knowledgeCollectionUpdate: (id: string, updates: { name?: string; interviewerName?: string | null; contextNotes?: string | null }) => Promise<{ success: boolean; error?: string }>
+  knowledgeCollectionDelete: (id: string) => Promise<{ success: boolean; error?: string }>
+  knowledgeCollectionGetActive: () => Promise<{ success: boolean; activeCollectionId: string | null; error?: string }>
+  knowledgeCollectionSetActive: (id: string | null) => Promise<{ success: boolean; error?: string }>
   onKnowledgeIndexProgress: (callback: (data: { fileId: string; status: string; startedAt?: number; finishedAt?: number; error?: string }) => void) => () => void
   knowledgeListPacks: (modeId: string) => Promise<{ success: boolean; packs: Array<{ id: string; sourceId: string; fileName: string; cardCount: number; entityCount: number; relationCount: number; packVersion: number; updatedAt: string }>; error?: string }>
   knowledgeGetPack: (fileId: string) => Promise<{ success: boolean; pack: any | null; error?: string }>
@@ -775,7 +789,7 @@ export interface ElectronAPI {
   // Streaming listeners
   streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean, ignoreKnowledgeMode?: boolean }) => Promise<void>
   onGeminiStreamToken: (callback: (token: string, meta?: { streamId?: number }) => void) => () => void
-  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number }) => void) => () => void
+  onGeminiStreamDone: (callback: (data?: { finalText?: string; streamId?: number; citations?: Array<{ sourceId: string; fileName: string; text: string }> }) => void) => () => void
   onGeminiStreamError: (callback: (error: string, meta?: { streamId?: number | null; source?: string }) => void) => () => void;
 
   // NOTE: onSkillsChanged broadcast subscription was removed. Skills are
