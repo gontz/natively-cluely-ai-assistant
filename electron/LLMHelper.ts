@@ -13426,7 +13426,10 @@ let isMultimodal = !!(imagePaths?.length);
     // Custom and cURL selections run here exactly as before; see
     // planMeetingSummaryLead for which other selections lead and why.
     const lead = LLMHelper.planMeetingSummaryLead(
-      this.selectedProviderOrNull(), opts?.timeoutMs, this.codexCliConfig.timeoutMs,
+      this.selectedProviderOrNull(), opts?.timeoutMs,
+      // Read defensively: the Codex rung below only touches this config when Codex
+      // is available, so a partially constructed helper must not throw here.
+      this.codexCliConfig?.timeoutMs ?? DEFAULT_CODEX_CLI_CONFIG.timeoutMs,
     );
     if (lead) {
       // withTimeout only races; aborting is what stops a timed-out stream

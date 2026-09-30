@@ -17707,7 +17707,11 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('skills:set-auto-match', (_evt, enabled: boolean) => {
     try {
-      SettingsManager.getInstance().set('skillAutoMatchEnabled', !!enabled);
+      if (!SettingsManager.getInstance().set('skillAutoMatchEnabled', !!enabled)) {
+        // R-24: the write was refused (degraded settings store); reporting
+        // success would show a value disk never received.
+        return { success: false, error: 'settings_store_degraded' };
+      }
       return { success: true, enabled: !!enabled };
     } catch (e: any) {
       console.warn('[IPC] skills:set-auto-match error:', e?.message || e);
