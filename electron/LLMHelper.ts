@@ -479,6 +479,12 @@ const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatt
 
 ${IMAGE_TRUST_TRAILER}`
 
+/**
+ * What getCurrentProvider reports: a Direct Assist provider family, with the
+ * cURL transport folded into "custom" (both are user-defined endpoints).
+ */
+export type CurrentLlmProvider = Exclude<DirectAssistProvider, 'curl'>;
+
 /** Per-call routing/budget overrides for the meeting-notes path. Omitted → today's behaviour. */
 export type MeetingSummaryCallOpts = {
   /** Routes to the gateway's benchmarked extraction path (larger budget, no MiniMax-M3). */
@@ -12383,11 +12389,20 @@ let isMultimodal = !!(imagePaths?.length);
     }
   }
 
-  public getCurrentProvider(): "ollama" | "gemini" | "custom" | "codex-cli" | "antigravity" {
-    if (this.customProvider) return "custom";
-    if (!this.useOllama && !this.activeCurlProvider && this.isAntigravityModel(this.currentModelId)) return "antigravity";
-    if (this.isCodexCliModel(this.currentModelId)) return "codex-cli";
-    return this.useOllama ? "ollama" : "gemini";
+  /**
+   * The selected provider's family, for labels and performance-profile keys.
+   *
+   * Derived from the same classification Direct Assist dispatches on, so it
+   * cannot drift from the route a turn actually takes. It used to report every
+   * OpenAI, Claude, Groq, DeepSeek and gateway selection as "gemini" and a cURL
+   * provider as "gemini" too; a cURL provider is reported as "custom" (both are
+   * user-defined endpoints). "gemini" remains the answer only for a Gemini
+   * selection or when nothing resolvable is selected, the old default.
+   */
+  public getCurrentProvider(): CurrentLlmProvider {
+    const provider = this.selectedProviderOrNull();
+    if (provider === 'curl') return 'custom';
+    return provider ?? 'gemini';
   }
 
   public getCurrentModel(): string {
