@@ -513,6 +513,8 @@ interface ElectronAPI {
     Array<{ id: string; title: string; date: string; duration: string; summary: string }>
   >;
   getMeetingDetails: (id: string) => Promise<any>;
+  getMeetingScreenshotImage: (filePath: string, variant?: 'thumbnail' | 'full') => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+  saveMeetingScreenshotAs: (filePath: string, timestamp?: number) => Promise<{ success: boolean; path?: string; error?: string }>;
   searchGlobalMeetings: (query: string, filters?: any) => Promise<{ enabled: boolean; results: any[] }>;
   searchMemories: (query: string) => Promise<{ enabled: boolean; results: Array<{ text: string; meetingId?: string; meetingTitle?: string; date?: string }> }>;
   searchInMeeting: (query: string) => Promise<{ enabled: boolean; results: any[] }>;
@@ -2135,6 +2137,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateMeetingSpeakerLabels: (id: string, labels: Record<string, string>) =>
     ipcRenderer.invoke('update-meeting-speaker-labels', { id, labels }),
   deleteMeeting: (id: string) => ipcRenderer.invoke('delete-meeting', id),
+  getMeetingScreenshotImage: (filePath: string, variant?: 'thumbnail' | 'full') =>
+    ipcRenderer.invoke('meeting-screenshot:read', filePath, variant),
+  saveMeetingScreenshotAs: (filePath: string, timestamp?: number) =>
+    ipcRenderer.invoke('meeting-screenshot:save-as', filePath, timestamp),
 
   onMeetingsUpdated: (callback: () => void) => {
     const subscription = () => callback();

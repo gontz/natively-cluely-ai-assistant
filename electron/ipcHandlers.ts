@@ -12,6 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AudioDevices } from './audio/AudioDevices';
 import { DatabaseManager } from './db/DatabaseManager'; // Import Database Manager
+import { defaultScreenshotExportName, isStoredScreenshotPath, screenshotMimeType } from './services/meeting/MeetingScreenshotStore';
 import { AppState } from './main';
 import { CodexCliService, getCodexAuthStatus, isCodexAuthError } from './services/CodexCliService';
 import { describeServiceAccountRejection } from './services/googleServiceAccount';
@@ -13752,6 +13753,56 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('get-meeting-details', async (event, id) => {
     // Helper to fetch full details
     return DatabaseManager.getInstance().getMeetingDetails(id);
+  });
+
+  // Screenshots saved with a meeting. The renderer only ever names a path the
+  // DB handed it; both handlers re-check that the path is a recorded meeting
+  // screenshot under <userData>/meeting-screenshots before touching disk.
+  const resolveMeetingScreenshot = (filePath: unknown): string | null => {
+    if (typeof filePath !== 'string' || !filePath) return null;
+    const db = DatabaseManager.getInstance();
+    const resolved = path.resolve(filePath);
+    if (!isStoredScreenshotPath(db.getMeetingScreenshotsRoot(), resolved)) return null;
+    if (!db.isRecordedMeetingScreenshot(filePath)) return null;
+    return resolved;
+  };
+
+  safeHandle('meeting-screenshot:read', async (_, filePath: string, variant?: 'thumbnail' | 'full') => {
+    const resolved = resolveMeetingScreenshot(filePath);
+    if (!resolved) return { success: false, error: 'not_allowed' };
+    if (!fs.existsSync(resolved)) return { success: false, error: 'missing' };
+    try {
+      if (variant === 'thumbnail') {
+        return { success: true, dataUrl: await appState.getImagePreview(resolved) };
+      }
+      const data = await fs.promises.readFile(resolved);
+      return { success: true, dataUrl: `data:${screenshotMimeType(resolved)};base64,${data.toString('base64')}` };
+    } catch (error: any) {
+      console.warn('[IPC] meeting-screenshot:read failed:', error);
+      return { success: false, error: error?.message || 'read_failed' };
+    }
+  });
+
+  safeHandle('meeting-screenshot:save-as', async (event, filePath: string, timestamp?: number) => {
+    const resolved = resolveMeetingScreenshot(filePath);
+    if (!resolved) return { success: false, error: 'not_allowed' };
+    if (!fs.existsSync(resolved)) return { success: false, error: 'missing' };
+    try {
+      const ext = path.extname(resolved).slice(1).toLowerCase() || 'png';
+      const parent = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
+      const options = {
+        title: 'Save screenshot',
+        defaultPath: path.join(app.getPath('downloads'), defaultScreenshotExportName(Number(timestamp), resolved)),
+        filters: [{ name: 'Image', extensions: ext === 'png' ? ['png'] : ['jpg', 'jpeg'] }],
+      };
+      const result = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { success: false, error: 'cancelled' };
+      await fs.promises.copyFile(resolved, result.filePath);
+      return { success: true, path: result.filePath };
+    } catch (error: any) {
+      console.warn('[IPC] meeting-screenshot:save-as failed:', error);
+      return { success: false, error: error?.message || 'save_failed' };
+    }
   });
 
   // GLOBAL MEETING SEARCH V2 (Phase 9 wiring, behind global_search_v2_enabled).

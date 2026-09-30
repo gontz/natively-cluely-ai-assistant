@@ -7,6 +7,7 @@ import { genMessageId } from '../utils/messageId';
 import { mapLanguageForPrism, isBlockCode } from '../utils/prismLanguage';
 import { registerPrismLanguages } from '../utils/registerPrismLanguages';
 import MeetingChatOverlay from './MeetingChatOverlay';
+import MeetingScreenshots, { type MeetingScreenshotEntry } from './MeetingScreenshots';
 import GlassSurface from '../ui-components/GlassSurface';
 // .lg-bubble (the Usage tab's question bubble) and .lg-chip (the gist tag).
 // Imported here rather than left to arrive through Launcher's LiquidGlassBadge import.
@@ -976,6 +977,7 @@ interface Meeting {
         answer?: string;
         items?: string[];
     }>;
+    screenshots?: MeetingScreenshotEntry[];
     summaryStatus?: MeetingSummaryStatus;
 }
 
@@ -1274,7 +1276,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const isLight = useResolvedTheme() === 'light';
     // We need local state for the meeting object to reflect optimistic updates
     const [meeting, setMeeting] = useState<Meeting>(initialMeeting);
-    const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage'>('summary');
+    const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage' | 'screenshots'>('summary');
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
@@ -1974,7 +1976,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                             surface it read as a raised container, but on the elevated grey it was
                             within ~3 levels of the page and the control lost its shape. */}
                         <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-[#E5E5EA] border border-black/[0.04]' : 'bg-[#0D0D0F] border border-white/[0.08]'}`}>
-                            {['summary', 'transcript', 'usage'].map((tab) => (
+                            {['summary', 'transcript', 'usage', ...(meeting.screenshots?.length ? ['screenshots'] : [])].map((tab) => (
                                 <button
                                     key={tab}
                                     onClick={() => setActiveTab(tab as any)}
@@ -1991,7 +1993,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                             transition={{ type: "spring", stiffness: 400, damping: 30 }}
                                         />
                                     )}
-                                    {tab === 'summary' ? t('Summary') : tab === 'transcript' ? t('Transcript') : t('Usage')}
+                                    {tab === 'summary' ? t('Summary') : tab === 'transcript' ? t('Transcript') : tab === 'screenshots' ? t('Screenshots') : t('Usage')}
                                 </button>
                             ))}
                         </div>
@@ -2000,14 +2002,14 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                         {/* handleCopy's summary branch reads detailedSummary, which is a
                             truthy-but-empty placeholder during generation — copying would
                             silently yield a header and nothing else. */}
-                        <button
+                        {activeTab !== 'screenshots' && <button
                             onClick={handleCopy}
                             disabled={activeTab === 'summary' && isSummaryGenerating}
                             className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-default disabled:hover:text-text-secondary"
                         >
                             {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
                             {isCopied ? t('Copied') : activeTab === 'summary' ? t('Copy full summary') : activeTab === 'transcript' ? t('Copy full transcript') : t('Copy usage')}
-                        </button>
+                        </button>}
                     </div>
                     </motion.div>
                 </div>
@@ -2812,6 +2814,12 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     })()}
                                 </div>
                             </motion.section>
+                        )}
+
+                        {activeTab === 'screenshots' && (
+                            <section className="pb-10">
+                                <MeetingScreenshots screenshots={meeting.screenshots ?? []} />
+                            </section>
                         )}
 
                         {activeTab === 'usage' && (
