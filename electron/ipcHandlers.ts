@@ -6080,11 +6080,8 @@ export function initializeIpcHandlers(appState: AppState): void {
             // signal in LLMHelper, so a concurrent live answer's sources can
             // never land on this row). Absent when none were retrieved.
             const ikCitations = llmHelper.getInterviewKnowledgeCitations?.(myController?.signal);
-            event.sender.send('gemini-stream-done', {
-              ...(finalText ? { finalText } : {}),
-              ...(ikCitations ? { citations: ikCitations } : {}),
-              streamId: myStreamId,
-            });
+            if (ikCitations) event.sender.send('gemini-stream-done', { ...(finalText ? { finalText } : {}), citations: ikCitations, streamId: myStreamId });
+            else event.sender.send('gemini-stream-done', { ...(finalText ? { finalText } : {}), streamId: myStreamId });
             chatTrace.mark('response_completed', { chars: fullResponse.length, repaired: Boolean(finalText) });
             chatTrace.finish({ chars: fullResponse.length });
             iTrace.setProvider({ provider: 'llm', model: undefined })

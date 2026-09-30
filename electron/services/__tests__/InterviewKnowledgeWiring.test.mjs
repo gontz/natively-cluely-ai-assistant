@@ -46,7 +46,7 @@ describe('Interview Knowledge wiring', () => {
   test('manual-chat done event reads citations with the same controller signal the answer streamed under', () => {
     const ipc = read('ipcHandlers.ts');
     assert.match(ipc, /llmHelper\.getInterviewKnowledgeCitations\?\.\(myController\?\.signal\)/);
-    assert.match(ipc, /\.\.\.\(ikCitations \? \{ citations: ikCitations \} : \{\}\)/);
+    assert.match(ipc, /if \(ikCitations\) event\.sender\.send\('gemini-stream-done', \{ \.\.\.\(finalText \? \{ finalText \} : \{\}\), citations: ikCitations, streamId: myStreamId \}\)/);
   });
 
   test('main injects the shared RAG pipeline into the retriever', () => {
